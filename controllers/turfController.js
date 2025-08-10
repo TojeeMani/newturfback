@@ -117,40 +117,44 @@ exports.createTurf = asyncHandler(async (req, res, next) => {
     return next(new ErrorResponse('Valid price per hour is required', 400));
   }
 
-  // Handle image uploads if provided
+  // Handle image URLs (already uploaded to Cloudinary by frontend)
   let imageUrls = [];
   if (req.body.images && req.body.images.length > 0) {
-    try {
-      // Upload images to Cloudinary
-      const uploadResult = await imageUploadService.uploadMultipleImages(req.body.images, 'turfs');
-      
-      if (!uploadResult.success) {
-        return next(new ErrorResponse('Failed to upload images', 500));
-      }
+    // Check if images are URLs (already uploaded) or base64/file data (need upload)
+    const firstImage = req.body.images[0];
 
-      // Extract URLs from successful uploads
-      imageUrls = uploadResult.images.map(img => img.url);
-      
-      if (imageUrls.length === 0) {
-        return next(new ErrorResponse('No images were uploaded successfully', 500));
-      }
+    if (typeof firstImage === 'string' && firstImage.startsWith('http')) {
+      // Images are already HTTP/HTTPS URLs (Cloudinary URLs or placeholder URLs for dev mode)
+      imageUrls = req.body.images;
+      console.log(`✅ Received ${imageUrls.length} pre-uploaded image URLs`);
+    } else {
+      // Images are file data, need to upload to Cloudinary
+      try {
+        const uploadResult = await imageUploadService.uploadMultipleImages(req.body.images, 'turfs');
 
-      console.log(`✅ Uploaded ${imageUrls.length} images for turf`);
-    } catch (error) {
-      console.error('❌ Image upload error:', error);
-      return next(new ErrorResponse('Failed to upload images', 500));
+        if (!uploadResult.success) {
+          return next(new ErrorResponse('Failed to upload images to Cloudinary', 500));
+        }
+
+        imageUrls = uploadResult.images.map(img => img.url);
+        console.log(`✅ Uploaded ${imageUrls.length} images to Cloudinary`);
+      } catch (error) {
+        console.error('❌ Image upload error:', error);
+        return next(new ErrorResponse('Failed to upload images to Cloudinary', 500));
+      }
     }
   }
 
-  // Validate that we have at least one image
+  // Validate that we have at least one image URL
   if (imageUrls.length === 0) {
     return next(new ErrorResponse('At least one image is required', 400));
   }
 
-  // Create turf with image URLs
+  // Create turf with image URLs (auto-approved)
   const turfData = {
     ...req.body,
-    images: imageUrls
+    images: imageUrls,
+    isApproved: true
   };
 
   const turf = await Turf.create(turfData);
@@ -158,7 +162,7 @@ exports.createTurf = asyncHandler(async (req, res, next) => {
   res.status(201).json({
     success: true,
     data: turf,
-    message: `Turf created successfully with ${imageUrls.length} images`
+    message: `Turf created successfully with ${imageUrls.length} Cloudinary images and is now live!`
   });
 });
 
@@ -298,7 +302,69 @@ exports.getNearbyTurfs = asyncHandler(async (req, res, next) => {
   });
 });
 
-// @desc    Approve turf (Admin only)
+// @desc    Get all turfs for admin (grouped by owner)
+// @route   GET /api/turfs/admin/all
+// @access  Private/Admin
+exports.getAllTurfsForAdmin = asyncHandler(async (req, res, next) => {
+  const page = parseInt(req.query.page, 10) || 1;
+  const limit = parseInt(req.query.limit, 10) || 10;
+  const startIndex = (page - 1) * limit;
+
+  // Get turfs with owner information
+  const turfs = await Turf.find()
+    .populate('ownerId', 'firstName lastName email businessName phone')
+    .sort('-createdAt')
+    .skip(startIndex)
+    .limit(limit);
+
+  const total = await Turf.countDocuments();
+
+  // Group turfs by owner
+  const turfsByOwner = turfs.reduce((acc, turf) => {
+    const ownerId = turf.ownerId._id.toString();
+    if (!acc[ownerId]) {
+      acc[ownerId] = {
+        owner: turf.ownerId,
+        turfs: [],
+        totalTurfs: 0
+      };
+    }
+    acc[ownerId].turfs.push(turf);
+    acc[ownerId].totalTurfs++;
+    return acc;
+  }, {});
+
+  // Pagination
+  const pagination = {};
+  const endIndex = page * limit;
+
+  if (endIndex < total) {
+    pagination.next = {
+      page: page + 1,
+      limit
+    };
+  }
+
+  if (startIndex > 0) {
+    pagination.prev = {
+      page: page - 1,
+      limit
+    };
+  }
+
+  res.status(200).json({
+    success: true,
+    count: turfs.length,
+    total,
+    pagination,
+    data: {
+      turfs,
+      turfsByOwner: Object.values(turfsByOwner)
+    }
+  });
+});
+
+// @desc    Approve turf (Admin only - legacy, now auto-approved)
 // @route   PUT /api/turfs/:id/approve
 // @access  Private/Admin
 exports.approveTurf = asyncHandler(async (req, res, next) => {

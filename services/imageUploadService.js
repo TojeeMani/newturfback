@@ -3,38 +3,71 @@ const { Readable } = require('stream');
 
 class ImageUploadService {
   /**
+   * Get standard dimensions for different image types
+   * @param {string} folder - The folder/type of image
+   * @returns {Object} Dimensions object with width, height, and quality
+   */
+  getStandardDimensions(folder) {
+    const dimensions = {
+      profiles: { width: 400, height: 400, quality: 85 },
+      turfs: { width: 800, height: 600, quality: 80 },
+      documents: { width: 1200, height: 800, quality: 75 },
+      default: { width: 800, height: 600, quality: 80 }
+    };
+
+    return dimensions[folder] || dimensions.default;
+  }
+
+  /**
+   * Detect MIME type from buffer
+   * @param {Buffer} buffer - Image buffer
+   * @returns {string} MIME type
+   */
+  detectMimeType(buffer) {
+    // Check for common image file signatures
+    if (buffer.length >= 4) {
+      const signature = buffer.toString('hex', 0, 4).toLowerCase();
+
+      if (signature.startsWith('ffd8')) return 'image/jpeg';
+      if (signature.startsWith('8950')) return 'image/png';
+      if (signature.startsWith('4749')) return 'image/gif';
+      if (signature.startsWith('5249')) return 'image/webp';
+    }
+
+    // Default to JPEG
+    return 'image/jpeg';
+  }
+
+  /**
    * Upload a single image to Cloudinary
    * @param {Buffer|string} imageData - Image buffer or base64 string
-   * @param {string} folder - Cloudinary folder (e.g., 'turfs')
+   * @param {string} folder - Cloudinary folder (e.g., 'turfs', 'profiles')
    * @param {string} publicId - Optional public ID for the image
    * @returns {Promise<Object>} Upload result with URL and public ID
    */
   async uploadImage(imageData, folder = 'turfs', publicId = null) {
     try {
-      // In development mode, use mock response
-      if (process.env.NODE_ENV === 'development') {
-        console.log('📸 Development mode - Mock image upload');
-        return {
-          success: true,
-          url: `https://picsum.photos/800/600?random=${Date.now()}`,
-          publicId: publicId || `dev_${Date.now()}`,
-          width: 800,
-          height: 600,
-          format: 'jpg',
-          size: Math.floor(Math.random() * 100000) + 50000,
-          folder: folder,
-          devMode: true
-        };
-      }
+      // Define standard dimensions based on folder
+      const dimensions = this.getStandardDimensions(folder);
 
-      // ORIGINAL CODE (commented out for now):
-      /*
+      // Always upload to Cloudinary (both development and production)
+      console.log('📸 Uploading to Cloudinary...');
+
+      // Cloudinary upload configuration:
       const uploadOptions = {
         folder: folder,
         resource_type: 'image',
         transformation: [
-          { width: 800, height: 600, crop: 'limit' }, // Resize to reasonable size
-          { quality: 'auto', fetch_format: 'auto' } // Optimize quality and format
+          {
+            width: dimensions.width,
+            height: dimensions.height,
+            crop: folder === 'profiles' ? 'fill' : 'limit',
+            gravity: folder === 'profiles' ? 'face' : 'center'
+          },
+          {
+            quality: dimensions.quality,
+            fetch_format: 'auto'
+          }
         ]
       };
 
@@ -64,6 +97,8 @@ class ImageUploadService {
         throw new Error('Invalid image data format');
       }
 
+      console.log('✅ Cloudinary upload successful:', uploadResult.secure_url);
+
       return {
         success: true,
         url: uploadResult.secure_url,
@@ -73,7 +108,6 @@ class ImageUploadService {
         format: uploadResult.format,
         size: uploadResult.bytes
       };
-      */
     } catch (error) {
       console.error('❌ Image upload failed:', error);
       return {

@@ -531,8 +531,24 @@ exports.firebaseAuth = async (req, res, next) => {
     }
 
     const { uid, email, name, picture } = decodedToken;
-    const [firstName, ...lastNameParts] = (name || '').split(' ');
-    const lastName = lastNameParts.join(' ');
+
+    // Parse name with better fallbacks
+    let firstName = 'User';
+    let lastName = '';
+
+    if (name && name.trim()) {
+      const nameParts = name.trim().split(' ');
+      firstName = nameParts[0] || 'User';
+      if (nameParts.length > 1) {
+        lastName = nameParts.slice(1).join(' ');
+      }
+    } else if (email) {
+      // Use email prefix as fallback for firstName
+      const emailPrefix = email.split('@')[0];
+      firstName = emailPrefix.charAt(0).toUpperCase() + emailPrefix.slice(1);
+    }
+
+    console.log('🔧 Backend: Parsed name - firstName:', firstName, 'lastName:', lastName);
 
     // Check if user already exists in database
     let user = await User.findOne({
@@ -541,6 +557,16 @@ exports.firebaseAuth = async (req, res, next) => {
         { firebaseUid: uid }
       ]
     });
+
+    // If user exists with email but no firebaseUid, link the accounts
+    if (user && !user.firebaseUid && user.email === email) {
+      console.log('🔧 Backend: Linking existing email account with Firebase');
+      user.firebaseUid = uid;
+      if (picture && !user.avatar) {
+        user.avatar = picture;
+      }
+      await user.save();
+    }
 
     if (user) {
       console.log('🔧 Backend: Existing user found:', user.email);
@@ -639,7 +665,7 @@ exports.firebaseAuth = async (req, res, next) => {
 
       // Create new user (always as player for Firebase users)
       const userData = {
-        firstName: firstName || '',
+        firstName: firstName || 'User',
         lastName: lastName || '',
         email: email,
         phone: '0000000000', // Default phone for Firebase users - they'll need to update this
@@ -651,19 +677,55 @@ exports.firebaseAuth = async (req, res, next) => {
         isActive: true,
         avatar: picture || '',
         preferredSports: [], // Empty array - user needs to fill this
-        location: '' // User needs to fill this
+        location: '', // User needs to fill this
+        isApprovedByAdmin: true, // Auto-approve Firebase users (players)
+        adminApprovalStatus: 'approved' // Set approval status
       };
 
-      console.log('🔧 Backend: Creating user with data:', userData);
-      user = await User.create(userData);
-      console.log('🔧 Backend: New user created successfully:', {
-        id: user._id,
-        email: user.email,
-        firstName: user.firstName,
-        lastName: user.lastName,
-        userType: user.userType,
-        firebaseUid: user.firebaseUid
+      console.log('🔧 Backend: Creating user with data:', {
+        firstName: userData.firstName,
+        lastName: userData.lastName,
+        email: userData.email,
+        phone: userData.phone,
+        userType: userData.userType,
+        firebaseUid: userData.firebaseUid
       });
+
+      try {
+        user = await User.create(userData);
+        console.log('🔧 Backend: New user created successfully:', {
+          id: user._id,
+          email: user.email,
+          firstName: user.firstName,
+          lastName: user.lastName,
+          userType: user.userType,
+          firebaseUid: user.firebaseUid
+        });
+      } catch (createError) {
+        console.error('❌ Backend: User creation failed:', createError);
+
+        // Handle duplicate email error
+        if (createError.code === 11000) {
+          return res.status(409).json({
+            success: false,
+            message: 'An account with this email already exists. Please try logging in instead.',
+            type: 'DUPLICATE_EMAIL'
+          });
+        }
+
+        // Handle validation errors
+        if (createError.name === 'ValidationError') {
+          const validationErrors = Object.values(createError.errors).map(err => err.message);
+          return res.status(400).json({
+            success: false,
+            message: 'User data validation failed',
+            errors: validationErrors,
+            type: 'VALIDATION_ERROR'
+          });
+        }
+
+        throw createError; // Re-throw other errors
+      }
 
       // Generate JWT token
       const token = user.getSignedJwtToken();

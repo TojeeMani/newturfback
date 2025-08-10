@@ -22,6 +22,41 @@ const upload = multer({
   }
 });
 
+// @desc    Upload profile image
+// @route   POST /api/upload/profile
+// @access  Private
+router.post('/profile', protect, upload.single('image'), asyncHandler(async (req, res, next) => {
+  if (!req.file) {
+    return next(new ErrorResponse('Please upload an image', 400));
+  }
+
+  try {
+    const result = await imageUploadService.uploadImage(
+      req.file.buffer,
+      'profiles',
+      `profile_${req.user.id}_${Date.now()}`
+    );
+
+    if (!result.success) {
+      return next(new ErrorResponse(result.error, 500));
+    }
+
+    res.status(200).json({
+      success: true,
+      data: {
+        url: result.url,
+        publicId: result.publicId,
+        width: result.width,
+        height: result.height,
+        message: 'Profile image uploaded successfully'
+      }
+    });
+  } catch (error) {
+    console.error('Profile image upload error:', error);
+    return next(new ErrorResponse('Profile image upload failed', 500));
+  }
+}));
+
 // @desc    Upload single image
 // @route   POST /api/upload/image
 // @access  Private
@@ -71,8 +106,15 @@ router.post('/images', protect, upload.array('images', 5), asyncHandler(async (r
   }
 
   try {
-    const imageBuffers = req.files.map(file => file.buffer);
+    console.log(`📤 Received ${req.files.length} files for upload`);
+    const imageBuffers = req.files.map(file => {
+      console.log(`📄 File: ${file.originalname}, Size: ${file.size}, Type: ${file.mimetype}`);
+      return file.buffer;
+    });
+
+    console.log('📤 Uploading to Cloudinary via imageUploadService...');
     const result = await imageUploadService.uploadMultipleImages(imageBuffers, 'turfs');
+    console.log('📤 Upload service result:', result);
 
     if (!result.success) {
       return next(new ErrorResponse(result.error, 500));

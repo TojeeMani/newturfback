@@ -8,6 +8,7 @@ const {
   deleteTurf,
   getMyTurfs,
   getNearbyTurfs,
+  getAllTurfsForAdmin,
   approveTurf
 } = require('../controllers/turfController');
 
@@ -28,6 +29,7 @@ router.put('/:id', authorize('owner'), updateTurf);
 router.delete('/:id', authorize('owner'), deleteTurf);
 
 // Admin routes
+router.get('/admin/all', authorize('admin'), getAllTurfsForAdmin);
 router.put('/:id/approve', authorize('admin'), approveTurf);
 
 module.exports = router; 

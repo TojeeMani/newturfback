@@ -40,9 +40,48 @@ const TurfSchema = new mongoose.Schema({
   },
   images: [{
     type: String,
-    required: [true, 'At least one image is required']
+    required: [true, 'At least one image is required'],
+    validate: {
+      validator: function(url) {
+        // Accept HTTP/HTTPS URLs (including placeholder URLs for dev mode)
+        return /^https?:\/\/.+/.test(url);
+      },
+      message: 'Image must be a valid HTTP/HTTPS URL'
+    }
   }],
+  sport: {
+    type: String,
+    required: [true, 'Sport type is required'],
+    enum: ['Football', 'Cricket', 'Basketball', 'Tennis', 'Badminton', 'Volleyball']
+  },
+  description: {
+    type: String,
+    trim: true,
+    maxlength: [500, 'Description cannot be more than 500 characters']
+  },
+  amenities: [{
+    type: String,
+    enum: [
+      'Floodlights', 'Parking', 'Changing Room', 'Washroom', 'Drinking Water',
+      'First Aid', 'Equipment Rental', 'Cafeteria', 'AC', 'Sound System',
+      'Professional Pitch', 'Scoreboard', 'Pavilion', 'Pro Shop', 'Coaching'
+    ]
+  }],
+  rating: {
+    type: Number,
+    default: 0,
+    min: [0, 'Rating cannot be negative'],
+    max: [5, 'Rating cannot be more than 5']
+  },
+  totalReviews: {
+    type: Number,
+    default: 0
+  },
   isApproved: {
+    type: Boolean,
+    default: true
+  },
+  isFeatured: {
     type: Boolean,
     default: false
   },
