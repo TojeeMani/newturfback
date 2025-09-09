@@ -14,9 +14,11 @@ const turfRoutes = require('./routes/turfs');
 const bookingRoutes = require('./routes/bookings');
 const adminRoutes = require('./routes/admin');
 const uploadRoutes = require('./routes/upload');
+const chatRoutes = require('./routes/chat');
 
 // Import middleware
 const errorHandler = require('./middleware/errorHandler');
+const Booking = require('./models/Booking');
 
 const app = express();
 
@@ -37,22 +39,25 @@ app.use(helmet({
 }));
 app.use(compression());
 
-// Rate limiting
+// Rate limiting - more lenient in development
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 100, // limit each IP to 100 requests per windowMs
+  max: process.env.NODE_ENV === 'development' ? 1000 : 100, // Higher limit for development
   message: 'Too many requests from this IP, please try again later.'
 });
 
 // Rate limiting for OTP requests (more restrictive)
 const otpLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 5, // limit each IP to 5 OTP requests per windowMs
+  max: process.env.NODE_ENV === 'development' ? 50 : 5, // Higher limit for development
   message: 'Too many OTP requests from this IP, please try again later.',
   skipSuccessfulRequests: true
 });
 
-app.use('/api/', limiter);
+// Only apply rate limiting in production
+if (process.env.NODE_ENV === 'production') {
+  app.use('/api/', limiter);
+}
 
 // Body parsing middleware
 app.use(express.json({ limit: '10mb' }));
@@ -87,6 +92,7 @@ app.use('/api/turfs', turfRoutes);
 app.use('/api/bookings', bookingRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/upload', uploadRoutes);
+app.use('/api/chat', chatRoutes);
 
 // 404 handler
 app.use('*', (req, res) => {
@@ -140,3 +146,32 @@ process.on('unhandledRejection', (err, promise) => {
   // Close server & exit process
   process.exit(1);
 }); 
+
+// Auto-complete bookings: runs every 5 minutes
+setInterval(async () => {
+  try {
+    const now = new Date();
+    const candidates = await Booking.find({ status: { $in: ['confirmed', 'in_progress'] } });
+    let updated = 0;
+    for (const b of candidates) {
+      const end = new Date(b.bookingDate);
+      const [eh, em] = (b.endTime || '00:00').split(':');
+      end.setHours(parseInt(eh || '0'), parseInt(em || '0'), 0, 0);
+      const start = new Date(b.bookingDate);
+      const [sh, sm] = (b.startTime || '00:00').split(':');
+      start.setHours(parseInt(sh || '0'), parseInt(sm || '0'), 0, 0);
+      if (start <= now && end > now && b.status !== 'in_progress') {
+        b.status = 'in_progress';
+        await b.save();
+        updated++;
+      } else if (end < now && b.status !== 'completed') {
+        b.status = 'completed';
+        await b.save();
+        updated++;
+      }
+    }
+    if (updated) console.log(`Auto-status updates applied to ${updated} bookings`);
+  } catch (e) {
+    console.warn('Auto-complete error:', e.message);
+  }
+}, 5 * 60 * 1000);

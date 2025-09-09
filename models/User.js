@@ -168,6 +168,18 @@ const userSchema = new mongoose.Schema({
       return this.userType === 'owner';
     }
   },
+  sportTypes: [{
+    type: String,
+    enum: ['Football', 'Cricket', 'Basketball', 'Tennis', 'Badminton', 'Volleyball']
+  }],
+  // Keep sportType for backward compatibility
+  sportType: {
+    type: String,
+    enum: ['Football', 'Cricket', 'Basketball', 'Tennis', 'Badminton', 'Volleyball'],
+    required: function() {
+      return this.userType === 'owner' && (!this.sportTypes || this.sportTypes.length === 0);
+    }
+  },
 
   // Owner Document URLs (Cloudinary)
   govIdFileUrl: { type: String }, // Government-issued ID proof
@@ -369,4 +381,4 @@ userSchema.methods.verifyTwoFactorBackupCode = function(code) {
   return false;
 };
 
-module.exports = mongoose.model('User', userSchema); 
+module.exports = mongoose.model('User', userSchema);

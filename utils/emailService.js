@@ -2,24 +2,54 @@ const nodemailer = require('nodemailer');
 
 // Create transporter
 const createTransporter = () => {
-  return nodemailer.createTransport({
-    service: 'gmail',
-    auth: {
-      user: process.env.EMAIL_USER || 'your-email@gmail.com',
-      pass: process.env.EMAIL_PASSWORD || 'your-app-password'
+  // Prefer generic SMTP if provided
+  if (process.env.SMTP_HOST && process.env.SMTP_USER && (process.env.SMTP_PASS || process.env.SMTP_PASSWORD)) {
+    try {
+      const transporter = nodemailer.createTransport({
+        host: process.env.SMTP_HOST,
+        port: parseInt(process.env.SMTP_PORT || '587', 10),
+        secure: String(process.env.SMTP_SECURE || '').toLowerCase() === 'true',
+        auth: {
+          user: process.env.SMTP_USER,
+          pass: process.env.SMTP_PASS || process.env.SMTP_PASSWORD
+        },
+        tls: { rejectUnauthorized: false }
+      });
+      return transporter;
+    } catch (e) {
+      console.warn('⚠️  SMTP config present but failed to initialize:', e.message);
     }
-  });
+  }
+
+  // Gmail convenience
+  const emailUser = process.env.EMAIL_USER;
+  const emailPass = process.env.EMAIL_PASS || process.env.EMAIL_PASSWORD;
+  if (emailUser && emailPass && emailUser !== 'your-email@gmail.com' && emailPass !== 'your-app-password') {
+    return nodemailer.createTransport({
+      service: 'gmail',
+      auth: { user: emailUser, pass: emailPass },
+      tls: { rejectUnauthorized: false }
+    });
+  }
+
+  console.warn('⚠️  Email credentials not configured. Using development mode.');
+  return null;
 };
 
 // Send OTP email
 const sendOTPEmail = async (email, otp, firstName) => {
   try {
-    // Try to send real email first
     const transporter = createTransporter();
-    console.log('📧 Attempting to send OTP email to:', email);
+    if (!transporter) {
+      console.log('🔧 EMAIL NOT CONFIGURED - Using development mode');
+      console.log('📧 Would send OTP email to:', email);
+      console.log('🔑 OTP Code:', otp);
+      console.log('👤 Recipient:', firstName);
+      return { success: true, messageId: 'dev-mode-no-email-config', devMode: true, otp, message: 'Email not configured. Check console for OTP.' };
+    }
 
     const mailOptions = {
-      from: process.env.EMAIL_USER || 'your-email@gmail.com',
+      from: process.env.EMAIL_USER || process.env.SMTP_USER || 'no-reply@turfease.local',
       to: email,
       subject: 'TurfEase - Email Verification OTP',
       html: `
@@ -56,27 +86,16 @@ const sendOTPEmail = async (email, otp, firstName) => {
     };
 
     const result = await transporter.sendMail(mailOptions);
-    console.log('✅ Email sent successfully:', result.messageId);
     return { success: true, messageId: result.messageId };
   } catch (error) {
     console.error('❌ Email sending failed:', error);
-
-    // Fallback to development mode if email fails
     if (process.env.NODE_ENV === 'development') {
       console.log('🔧 FALLBACK - Using development mode due to email failure');
       console.log('📧 Would send OTP email to:', email);
       console.log('🔑 OTP Code:', otp);
       console.log('👤 Recipient:', firstName);
-
-      return {
-        success: true,
-        messageId: 'dev-fallback-mode',
-        devMode: true,
-        otp: otp,
-        fallback: true
-      };
+      return { success: true, messageId: 'dev-fallback-mode', devMode: true, otp, fallback: true };
     }
-
     return { success: false, error: error.message };
   }
 };
@@ -84,12 +103,17 @@ const sendOTPEmail = async (email, otp, firstName) => {
 // Send resend OTP email
 const sendResendOTPEmail = async (email, otp, firstName) => {
   try {
-    // Try to send real email first
     const transporter = createTransporter();
-    console.log('📧 Attempting to resend OTP email to:', email);
-    
+    if (!transporter) {
+      console.log('🔧 EMAIL NOT CONFIGURED - Using development mode for resend');
+      console.log('📧 Would resend OTP email to:', email);
+      console.log('🔑 New OTP Code:', otp);
+      console.log('👤 Recipient:', firstName);
+      return { success: true, messageId: 'dev-mode-resend-no-email-config', devMode: true, otp, message: 'Email not configured. Check console for new OTP.' };
+    }
+
     const mailOptions = {
-      from: process.env.EMAIL_USER || 'your-email@gmail.com',
+      from: process.env.EMAIL_USER || process.env.SMTP_USER || 'no-reply@turfease.local',
       to: email,
       subject: 'TurfEase - New Verification OTP',
       html: `
@@ -126,27 +150,16 @@ const sendResendOTPEmail = async (email, otp, firstName) => {
     };
 
     const result = await transporter.sendMail(mailOptions);
-    console.log('✅ Resend OTP email sent successfully:', result.messageId);
     return { success: true, messageId: result.messageId };
   } catch (error) {
     console.error('❌ Resend OTP email sending failed:', error);
-
-    // Fallback to development mode if email fails
     if (process.env.NODE_ENV === 'development') {
       console.log('🔧 FALLBACK - Using development mode for resend due to email failure');
       console.log('📧 Would resend OTP email to:', email);
       console.log('🔑 New OTP Code:', otp);
       console.log('👤 Recipient:', firstName);
-
-      return {
-        success: true,
-        messageId: 'dev-fallback-resend',
-        devMode: true,
-        otp: otp,
-        fallback: true
-      };
+      return { success: true, messageId: 'dev-fallback-resend', devMode: true, otp, fallback: true };
     }
-
     return { success: false, error: error.message };
   }
 };
@@ -155,23 +168,27 @@ const sendResendOTPEmail = async (email, otp, firstName) => {
 const sendEmail = async ({ email, subject, html, text }) => {
   try {
     const transporter = createTransporter();
+    if (!transporter) {
+      // In dev/no-config, don't fail booking flows; log instead
+      console.log('🔧 EMAIL NOT CONFIGURED - Simulating send');
+      console.log('📧 To:', email);
+      console.log('📋 Subject:', subject);
+      return { success: true, messageId: 'dev-simulated-send', devMode: true };
+    }
 
     const mailOptions = {
-      from: process.env.EMAIL_USER || 'your-email@gmail.com',
+      from: process.env.EMAIL_USER || process.env.SMTP_USER || 'no-reply@turfease.local',
       to: email,
-      subject: subject,
-      html: html,
-      text: text // Fallback text version
+      subject,
+      html,
+      text
     };
 
-    console.log('📧 Sending email to:', email, 'Subject:', subject);
-
     const result = await transporter.sendMail(mailOptions);
-    console.log('✅ Email sent successfully:', result.messageId);
-
     return { success: true, messageId: result.messageId };
   } catch (error) {
     console.error('❌ Email sending failed:', error);
+    // Never block flows due to email; indicate soft failure
     return { success: false, error: error.message };
   }
 };

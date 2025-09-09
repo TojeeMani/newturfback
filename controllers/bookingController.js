@@ -1,0 +1,235 @@
+const Turf = require('../models/Turf');
+const Booking = require('../models/Booking');
+const asyncHandler = require('../middleware/async');
+const ErrorResponse = require('../utils/errorResponse');
+
+// @desc    Get all bookings for the authenticated user
+// @route   GET /api/bookings
+// @access  Private
+exports.getUserBookings = asyncHandler(async (req, res, next) => {
+  const bookings = await Booking.findByCustomer(req.user.id);
+
+  res.status(200).json({
+    success: true,
+    count: bookings.length,
+    data: bookings
+  });
+});
+
+// @desc    Get single booking (must belong to user)
+// @route   GET /api/bookings/:id
+// @access  Private
+exports.getBooking = asyncHandler(async (req, res, next) => {
+  const booking = await Booking.findById(req.params.id)
+    .populate('turfId', 'name location sport images')
+    .populate('ownerId', 'businessName');
+
+  if (!booking) {
+    return next(new ErrorResponse('Booking not found', 404));
+  }
+
+  if (booking.customerId?.toString() !== req.user.id) {
+    return next(new ErrorResponse('Not authorized to view this booking', 403));
+  }
+
+  res.status(200).json({ success: true, data: booking });
+});
+
+// @desc    Create a new online booking (customer must be logged in)
+// @route   POST /api/bookings
+// @access  Private
+exports.createBooking = asyncHandler(async (req, res, next) => {
+  const { turfId, date, startTime, endTime, paymentMethod, slots } = req.body;
+
+  const isBulk = Array.isArray(slots) && slots.length > 0;
+
+  if (!turfId) {
+    return next(new ErrorResponse('turfId is required', 400));
+  }
+  if (!isBulk && (!date || !startTime || !endTime)) {
+    return next(new ErrorResponse('date, startTime and endTime are required', 400));
+  }
+
+  const turf = await Turf.findById(turfId);
+  if (!turf) {
+    return next(new ErrorResponse('Turf not found', 404));
+  }
+
+  const toProcess = isBulk ? slots : [{ date, startTime, endTime, paymentMethod }];
+  const created = [];
+
+  for (const s of toProcess) {
+    const sDate = new Date(s.date);
+    const sDay = ['sunday','monday','tuesday','wednesday','thursday','friday','saturday'][sDate.getDay()];
+    const daySlots = turf.availableSlots?.[sDay];
+    if (!daySlots || !daySlots.isOpen) {
+      return next(new ErrorResponse(`No slots available on ${sDay}`, 400));
+    }
+    const slot = daySlots.slots.find(ds => ds.startTime === s.startTime && ds.endTime === s.endTime);
+    if (!slot) {
+      return next(new ErrorResponse('Selected slot is not available', 400));
+    }
+    const isAvailable = turf.isSlotAvailable(sDate, sDay, s.startTime, s.endTime);
+    if (!isAvailable) {
+      return next(new ErrorResponse('One or more selected slots are already booked', 400));
+    }
+
+    const pricePerHour = slot.price || turf.pricePerHour;
+    const method = ['cash', 'card', 'upi', 'bank_transfer', 'online'].includes((s.paymentMethod || paymentMethod || '').toLowerCase())
+      ? (s.paymentMethod || paymentMethod || 'online')
+      : 'online';
+
+    const booking = await Booking.create({
+      turfId: turf._id,
+      ownerId: turf.ownerId,
+      customerId: req.user.id,
+      customerInfo: {
+        name: `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email || 'Customer',
+        phone: req.user.phone || 'N/A',
+        email: req.user.email || ''
+      },
+      bookingDate: sDate,
+      startTime: s.startTime,
+      endTime: s.endTime,
+      pricePerHour,
+      status: 'confirmed',
+      paymentStatus: method === 'online' ? 'pending' : 'pending',
+      paymentMethod: method,
+      bookingType: 'online'
+    });
+
+    await turf.bookSlot(sDate, sDay, s.startTime, s.endTime, booking._id);
+    created.push(booking);
+  }
+
+  // Send confirmation email (best-effort) with booking code and QR
+  try {
+    const { sendEmail } = require('../utils/emailService');
+    if (req.user?.email) {
+      const list = (created || []).length ? created : [created];
+      const rows = list.map(b => {
+        const code = b.bookingCode || (b._id?.toString() || '').slice(-8).toUpperCase();
+        const qrData = JSON.stringify({ bookingId: b._id?.toString(), bookingCode: code });
+        const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=140x140&data=${encodeURIComponent(qrData)}`;
+        return `
+          <tr>
+            <td style="padding:8px;border:1px solid #e5e7eb;">${new Date(b.bookingDate).toDateString()}</td>
+            <td style="padding:8px;border:1px solid #e5e7eb;">${b.startTime} - ${b.endTime}</td>
+            <td style="padding:8px;border:1px solid #e5e7eb;"><code>${code}</code></td>
+            <td style="padding:8px;border:1px solid #e5e7eb;"><img src="${qrUrl}" alt="QR" /></td>
+          </tr>`;
+      }).join('');
+
+      const html = `
+        <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Oxygen,Ubuntu,Cantarell,'Helvetica Neue',Arial,sans-serif;max-width:680px;margin:0 auto;background:#f3f4f6;padding:24px;">
+          <div style="background:#ffffff;border-radius:16px;overflow:hidden;box-shadow:0 10px 25px rgba(0,0,0,0.08);">
+            <div style="background:linear-gradient(135deg,#10b981,#059669);padding:24px;color:#fff;text-align:center;">
+              <div style="font-size:20px;font-weight:700;letter-spacing:.3px;">TurfEase</div>
+              <div style="font-size:14px;opacity:.9;margin-top:4px;">Booking Confirmation</div>
+            </div>
+            <div style="padding:24px;">
+              <p style="margin:0 0 8px 0;color:#111827;font-weight:600;">Hi ${req.user.firstName || 'Player'},</p>
+              <p style="margin:0 0 16px 0;color:#4b5563;">Your booking at <strong>${turf.name}</strong> is confirmed. Please bring the QR or booking code for check‑in.</p>
+              <table role="presentation" style="width:100%;border-collapse:separate;border-spacing:0;overflow:hidden;border-radius:12px;border:1px solid #e5e7eb;">
+                <thead>
+                  <tr style="background:#f9fafb;">
+                    <th style="text-align:left;padding:10px 12px;color:#374151;font-size:12px;text-transform:uppercase;letter-spacing:.5px;">Date</th>
+                    <th style="text-align:left;padding:10px 12px;color:#374151;font-size:12px;text-transform:uppercase;letter-spacing:.5px;">Time</th>
+                    <th style="text-align:left;padding:10px 12px;color:#374151;font-size:12px;text-transform:uppercase;letter-spacing:.5px;">Code</th>
+                    <th style="text-align:left;padding:10px 12px;color:#374151;font-size:12px;text-transform:uppercase;letter-spacing:.5px;">QR</th>
+                  </tr>
+                </thead>
+                <tbody>${rows}</tbody>
+              </table>
+              <div style="margin-top:16px;padding:12px 14px;background:#f9fafb;border:1px solid #e5e7eb;border-radius:10px;color:#374151;font-size:13px;">Payment Method: <strong>${(paymentMethod || 'online').toUpperCase()}</strong></div>
+              <div style="text-align:center;margin-top:20px;">
+                <a href="${process.env.FRONTEND_URL || 'http://localhost:3000'}/bookings/my" style="display:inline-block;background:#10b981;color:#ffffff;text-decoration:none;padding:10px 18px;border-radius:10px;font-weight:600;font-size:14px;">View My Bookings</a>
+              </div>
+            </div>
+            <div style="padding:14px;text-align:center;background:#f9fafb;color:#6b7280;font-size:12px;">© ${new Date().getFullYear()} TurfEase. All rights reserved.</div>
+          </div>
+        </div>`;
+      await sendEmail({
+        email: req.user.email,
+        subject: 'Your TurfEase booking is confirmed',
+        html,
+        text: 'Your booking is confirmed.'
+      });
+    }
+  } catch (e) {
+    console.log('Email send skipped/failure:', e.message);
+  }
+
+  res.status(201).json({
+    success: true,
+    message: isBulk ? 'Bookings created' : 'Booking created',
+    data: isBulk ? created : created[0]
+  });
+});
+
+// @desc    Cancel a booking (customer)
+// @route   DELETE /api/bookings/:id
+// @access  Private
+exports.cancelBooking = asyncHandler(async (req, res, next) => {
+  const booking = await Booking.findById(req.params.id);
+  if (!booking) {
+    return next(new ErrorResponse('Booking not found', 404));
+  }
+
+  if (booking.customerId?.toString() !== req.user.id) {
+    return next(new ErrorResponse('Not authorized to cancel this booking', 403));
+  }
+
+  // Cancel booking record
+  await booking.cancelBooking(req.user.id, 'Cancelled by customer');
+
+  // Free the slot on turf
+  const turf = await Turf.findById(booking.turfId);
+  if (turf) {
+    const dayOfWeek = ['sunday','monday','tuesday','wednesday','thursday','friday','saturday'][booking.bookingDate.getDay()];
+    await turf.cancelSlotBooking(booking.bookingDate, dayOfWeek, booking.startTime, booking.endTime);
+  }
+
+  res.status(200).json({ success: true, message: 'Booking cancelled' });
+});
+
+// @desc    Owner check-in booking by bookingCode
+// @route   POST /api/bookings/checkin
+// @access  Private/Owner
+exports.checkInBooking = asyncHandler(async (req, res, next) => {
+  const { bookingCode, turfId, date } = req.body;
+  if (!bookingCode) {
+    return next(new ErrorResponse('bookingCode is required', 400));
+  }
+
+  // Find booking by code and owner
+  const booking = await Booking.findOne({ bookingCode });
+  if (!booking) {
+    return next(new ErrorResponse('Booking not found', 404));
+  }
+
+  if (booking.ownerId.toString() !== req.user.id) {
+    return next(new ErrorResponse('Not authorized to check in this booking', 403));
+  }
+
+  // Optional validations: turf and date
+  if (turfId && booking.turfId.toString() !== turfId) {
+    return next(new ErrorResponse('Booking does not belong to this turf', 400));
+  }
+  if (date) {
+    const d = new Date(date);
+    const bd = new Date(booking.bookingDate);
+    const sameDay = d.getFullYear() === bd.getFullYear() && d.getMonth() === bd.getMonth() && d.getDate() === bd.getDate();
+    if (!sameDay) {
+      return next(new ErrorResponse('Booking is not for the selected date', 400));
+    }
+  }
+
+  // Mark as in_progress on check-in
+  booking.status = 'in_progress';
+  await booking.save();
+
+  res.status(200).json({ success: true, data: booking, message: 'Booking checked-in successfully' });
+});
+
+

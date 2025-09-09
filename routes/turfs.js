@@ -9,7 +9,13 @@ const {
   getMyTurfs,
   getNearbyTurfs,
   getAllTurfsForAdmin,
-  approveTurf
+  approveTurf,
+  checkSlotAvailability,
+  getAvailableSlots,
+  bookSlot,
+  cancelSlotBooking,
+  getTurfBookings,
+  getOwnerBookings
 } = require('../controllers/turfController');
 
 const router = express.Router();
@@ -18,18 +24,24 @@ const router = express.Router();
 router.get('/', getTurfs);
 router.get('/nearby', getNearbyTurfs);
 router.get('/:id', getTurf);
+router.get('/:id/slots/check', checkSlotAvailability);
+router.get('/:id/slots/available', getAvailableSlots);
 
 // Protected routes
 router.use(protect);
 
 // Owner routes
 router.get('/owner/my', authorize('owner'), getMyTurfs);
+router.get('/owner/bookings', authorize('owner'), getOwnerBookings);
 router.post('/', authorize('owner'), createTurf);
 router.put('/:id', authorize('owner'), updateTurf);
 router.delete('/:id', authorize('owner'), deleteTurf);
+router.get('/:id/bookings', authorize('owner'), getTurfBookings);
+router.post('/:id/slots/book', authorize('owner'), bookSlot);
+router.delete('/:id/slots/cancel', authorize('owner'), cancelSlotBooking);
 
 // Admin routes
 router.get('/admin/all', authorize('admin'), getAllTurfsForAdmin);
 router.put('/:id/approve', authorize('admin'), approveTurf);
 
-module.exports = router; 
+module.exports = router;

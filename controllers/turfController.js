@@ -1,4 +1,5 @@
 const Turf = require('../models/Turf');
+const Booking = require('../models/Booking');
 const asyncHandler = require('../middleware/async');
 const ErrorResponse = require('../utils/errorResponse');
 const imageUploadService = require('../services/imageUploadService');
@@ -24,8 +25,15 @@ exports.getTurfs = asyncHandler(async (req, res, next) => {
   // Create operators ($gt, $gte, etc)
   queryStr = queryStr.replace(/\b(gt|gte|lt|lte|in)\b/g, match => `$${match}`);
 
-  // Finding resource
-  query = Turf.find(JSON.parse(queryStr));
+  // Finding resource with owner approval check
+  query = Turf.find(JSON.parse(queryStr)).populate({
+    path: 'ownerId',
+    select: 'adminApprovalStatus isActive',
+    match: {
+      adminApprovalStatus: 'approved',
+      isActive: true
+    }
+  });
 
   // Select Fields
   if (req.query.select) {
@@ -46,12 +54,36 @@ exports.getTurfs = asyncHandler(async (req, res, next) => {
   const limit = parseInt(req.query.limit, 10) || 25;
   const startIndex = (page - 1) * limit;
   const endIndex = page * limit;
-  const total = await Turf.countDocuments();
+  // Count only turfs from approved and active owners
+  const totalQuery = await Turf.aggregate([
+    {
+      $lookup: {
+        from: 'users',
+        localField: 'ownerId',
+        foreignField: '_id',
+        as: 'owner'
+      }
+    },
+    {
+      $match: {
+        'owner.adminApprovalStatus': 'approved',
+        'owner.isActive': true
+      }
+    },
+    {
+      $count: 'total'
+    }
+  ]);
+
+  const total = totalQuery.length > 0 ? totalQuery[0].total : 0;
 
   query = query.skip(startIndex).limit(limit);
 
   // Executing query
-  const turfs = await query;
+  const allTurfs = await query;
+
+  // Filter out turfs where owner population failed (owner not approved or inactive)
+  const turfs = allTurfs.filter(turf => turf.ownerId !== null);
 
   // Pagination result
   const pagination = {};
@@ -82,15 +114,27 @@ exports.getTurfs = asyncHandler(async (req, res, next) => {
 // @route   GET /api/turfs/:id
 // @access  Public
 exports.getTurf = asyncHandler(async (req, res, next) => {
-  const turf = await Turf.findById(req.params.id);
+  const turf = await Turf.findById(req.params.id).populate({
+    path: 'ownerId',
+    select: 'adminApprovalStatus isActive'
+  });
 
   if (!turf) {
     return next(new ErrorResponse(`Turf not found with id of ${req.params.id}`, 404));
   }
 
+  // Check if owner is approved and active
+  if (!turf.ownerId || turf.ownerId.adminApprovalStatus !== 'approved' || !turf.ownerId.isActive) {
+    return next(new ErrorResponse(`Turf not available`, 404));
+  }
+
+  // Remove owner data from response for privacy
+  const turfData = turf.toObject();
+  delete turfData.ownerId;
+
   res.status(200).json({
     success: true,
-    data: turf
+    data: turfData
   });
 });
 
@@ -102,14 +146,8 @@ exports.createTurf = asyncHandler(async (req, res, next) => {
   req.body.ownerId = req.user.id;
 
   // Validate location data
-  if (!req.body.location || !req.body.location.address || !req.body.location.coordinates) {
-    return next(new ErrorResponse('Location with address and coordinates is required', 400));
-  }
-
-  // Validate coordinates
-  const { lat, lng } = req.body.location.coordinates;
-  if (lat < -90 || lat > 90 || lng < -180 || lng > 180) {
-    return next(new ErrorResponse('Invalid coordinates', 400));
+  if (!req.body.location || !req.body.location.address) {
+    return next(new ErrorResponse('Location address is required', 400));
   }
 
   // Validate price
@@ -150,11 +188,63 @@ exports.createTurf = asyncHandler(async (req, res, next) => {
     return next(new ErrorResponse('At least one image is required', 400));
   }
 
+  // Get user data for originalRegistrationData
+  const user = req.user;
+
+  // Validate that turf data matches registration data
+  if (req.body.name !== user.businessName) {
+    return next(new ErrorResponse(`Turf name must match your business name from registration: "${user.businessName}"`, 400));
+  }
+
+  if (req.body.location.address !== user.turfLocation) {
+    return next(new ErrorResponse(`Turf location must match your registered location: "${user.turfLocation}"`, 400));
+  }
+
+  // Check if sport type is allowed for this owner (only if owner has registered sports)
+  const allowedSports = Array.isArray(user.sportTypes) && user.sportTypes.length > 0
+    ? user.sportTypes
+    : (user.sportType ? [user.sportType] : []);
+  if (allowedSports.length > 0 && !allowedSports.includes(req.body.sport)) {
+    const sportsList = allowedSports.join(', ');
+    return next(new ErrorResponse(`Sport type must be one of your registered sport types: ${sportsList}`.trim(), 400));
+  }
+
+  // Check if owner has reached their turf limit
+  const existingTurfsCount = await Turf.countDocuments({ ownerId: req.user.id });
+  let maxTurfs = 0;
+  
+  switch (user.turfCount) {
+    case '1':
+      maxTurfs = 1;
+      break;
+    case '2-5':
+      maxTurfs = 5;
+      break;
+    case '6-10':
+      maxTurfs = 10;
+      break;
+    case '10+':
+      maxTurfs = 999; // Effectively unlimited
+      break;
+    default:
+      maxTurfs = 1; // Default to 1 if not specified
+  }
+  
+  if (existingTurfsCount >= maxTurfs) {
+    return next(new ErrorResponse(`You have reached your maximum turf limit of ${user.turfCount}. You currently have ${existingTurfsCount} turf(s) registered.`, 400));
+  }
+
   // Create turf with image URLs (auto-approved)
   const turfData = {
     ...req.body,
     images: imageUrls,
-    isApproved: true
+    isApproved: true,
+    // Set original registration data (cannot be changed later)
+    originalRegistrationData: {
+      name: req.body.name,
+      address: req.body.location.address,
+      businessName: user.businessName || (user.firstName + ' ' + user.lastName)
+    }
   };
 
   const turf = await Turf.create(turfData);
@@ -181,16 +271,17 @@ exports.updateTurf = asyncHandler(async (req, res, next) => {
     return next(new ErrorResponse(`User ${req.user.id} is not authorized to update this turf`, 401));
   }
 
-  // Validate location data if provided
+  // Validate/merge location data if provided
   if (req.body.location) {
-    if (!req.body.location.address || !req.body.location.coordinates) {
-      return next(new ErrorResponse('Location must include address and coordinates', 400));
+    const incoming = req.body.location;
+    // If coordinates are provided, validate range; if omitted/null, keep existing
+    if (incoming.coordinates) {
+      const { lat, lng } = incoming.coordinates;
+      if (lat < -90 || lat > 90 || lng < -180 || lng > 180) {
+        return next(new ErrorResponse('Invalid coordinates', 400));
+      }
     }
-
-    const { lat, lng } = req.body.location.coordinates;
-    if (lat < -90 || lat > 90 || lng < -180 || lng > 180) {
-      return next(new ErrorResponse('Invalid coordinates', 400));
-    }
+    // Do not force both address and coordinates. Address changes are handled via restricted fields above.
   }
 
   // Validate price if provided
@@ -198,42 +289,98 @@ exports.updateTurf = asyncHandler(async (req, res, next) => {
     return next(new ErrorResponse('Price cannot be negative', 400));
   }
 
-  // Handle image uploads if new images are provided
+  // Handle image updates: accept already-uploaded URLs or upload raw files
   if (req.body.images && req.body.images.length > 0) {
-    try {
-      // Upload new images to Cloudinary
-      const uploadResult = await imageUploadService.uploadMultipleImages(req.body.images, 'turfs');
-      
-      if (!uploadResult.success) {
+    const first = req.body.images[0];
+    if (typeof first === 'string' && first.startsWith('http')) {
+      // Images are URLs provided by the frontend (already uploaded via /upload/images)
+      // Keep as-is, replacing existing images with provided URLs
+      console.log(`✅ Received ${req.body.images.length} image URLs for update`);
+    } else {
+      try {
+        const uploadResult = await imageUploadService.uploadMultipleImages(req.body.images, 'turfs');
+        if (!uploadResult.success) {
+          return next(new ErrorResponse('Failed to upload new images', 500));
+        }
+        const newImageUrls = uploadResult.images.map(img => img.url);
+        if (newImageUrls.length === 0) {
+          return next(new ErrorResponse('No new images were uploaded successfully', 500));
+        }
+        req.body.images = newImageUrls;
+        console.log(`✅ Updated turf with ${newImageUrls.length} new images`);
+      } catch (error) {
+        console.error('❌ Image upload error during update:', error);
         return next(new ErrorResponse('Failed to upload new images', 500));
       }
-
-      // Extract URLs from successful uploads
-      const newImageUrls = uploadResult.images.map(img => img.url);
-      
-      if (newImageUrls.length === 0) {
-        return next(new ErrorResponse('No new images were uploaded successfully', 500));
-      }
-
-      // Replace existing images with new ones
-      req.body.images = newImageUrls;
-      
-      console.log(`✅ Updated turf with ${newImageUrls.length} new images`);
-    } catch (error) {
-      console.error('❌ Image upload error during update:', error);
-      return next(new ErrorResponse('Failed to upload new images', 500));
     }
   }
 
-  turf = await Turf.findByIdAndUpdate(req.params.id, req.body, {
-    new: true,
-    runValidators: true
-  });
+  // Define fields that require admin approval
+  const restrictedFields = ['name', 'location.address', 'pricePerHour', 'description', 'amenities', 'sport'];
+  const protectedFields = []; // Allow edits; sensitive fields require approval via restrictedFields
+
+  // Check if trying to change protected fields
+  for (const field of protectedFields) {
+    if (req.body[field] || (field === 'location.address' && req.body.location?.address)) {
+      const originalValue = field === 'location.address' ? turf.originalRegistrationData?.address : turf.originalRegistrationData?.name;
+      const newValue = field === 'location.address' ? req.body.location?.address : req.body[field];
+
+      if (newValue && originalValue && newValue !== originalValue) {
+        return next(new ErrorResponse(`${field === 'location.address' ? 'Address' : 'Name'} cannot be changed. It must match your original registration: "${originalValue}"`, 400));
+      }
+    }
+  }
+
+  // Separate changes that need approval from those that don't
+  const needsApproval = {};
+  const directUpdates = {};
+
+  for (const [key, value] of Object.entries(req.body)) {
+    if (restrictedFields.includes(key)) {
+      needsApproval[key] = value;
+      continue;
+    }
+
+    if (key === 'location') {
+      const nextLocation = { ...turf.location };
+      if (value.coordinates) {
+        nextLocation.coordinates = value.coordinates;
+      }
+      if (value.address && value.address !== turf.location?.address) {
+        // Address changes require admin approval
+        needsApproval['location.address'] = value.address;
+      }
+      directUpdates.location = nextLocation;
+      continue;
+    }
+
+    directUpdates[key] = value;
+  }
+
+  // Apply direct updates (non-restricted fields)
+  if (Object.keys(directUpdates).length > 0) {
+    Object.assign(turf, directUpdates);
+  }
+
+  // Handle changes that need approval
+  if (Object.keys(needsApproval).length > 0) {
+    turf.pendingChanges = new Map(Object.entries(needsApproval));
+    turf.changesApprovalStatus = 'pending';
+    turf.changeApprovalNotes = '';
+  }
+
+  await turf.save();
+
+  const message = Object.keys(needsApproval).length > 0
+    ? 'Turf updated. Some changes require admin approval.'
+    : (req.body.images ? 'Turf updated successfully with new images' : 'Turf updated successfully');
 
   res.status(200).json({
     success: true,
     data: turf,
-    message: req.body.images ? 'Turf updated successfully with new images' : 'Turf updated successfully'
+    message,
+    pendingApproval: Object.keys(needsApproval).length > 0,
+    pendingChanges: Object.keys(needsApproval)
   });
 });
 
@@ -381,4 +528,298 @@ exports.approveTurf = asyncHandler(async (req, res, next) => {
     success: true,
     data: turf
   });
+});
+
+// @desc    Check slot availability
+// @route   GET /api/turfs/:id/slots/check
+// @access  Public
+exports.checkSlotAvailability = asyncHandler(async (req, res, next) => {
+  const { date, startTime, endTime } = req.query;
+  
+  if (!date || !startTime || !endTime) {
+    return next(new ErrorResponse('Date, start time, and end time are required', 400));
+  }
+
+  const turf = await Turf.findById(req.params.id);
+  
+  if (!turf) {
+    return next(new ErrorResponse(`Turf not found with id of ${req.params.id}`, 404));
+  }
+
+  const bookingDate = new Date(date);
+  const dayOfWeek = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'][bookingDate.getDay()];
+  
+  const isAvailable = turf.isSlotAvailable(bookingDate, dayOfWeek, startTime, endTime);
+  
+  res.status(200).json({
+    success: true,
+    data: {
+      available: isAvailable,
+      date,
+      startTime,
+      endTime
+    }
+  });
+});
+
+// @desc    Get available slots for a date
+// @route   GET /api/turfs/:id/slots/available
+// @access  Public
+exports.getAvailableSlots = asyncHandler(async (req, res, next) => {
+  const { date } = req.query;
+  
+  if (!date) {
+    return next(new ErrorResponse('Date is required', 400));
+  }
+
+  const turf = await Turf.findById(req.params.id);
+  
+  if (!turf) {
+    return next(new ErrorResponse(`Turf not found with id of ${req.params.id}`, 404));
+  }
+
+  const bookingDate = new Date(date);
+  const availableSlots = turf.getAvailableSlots(bookingDate);
+  
+  res.status(200).json({
+    success: true,
+    data: {
+      date,
+      slots: availableSlots
+    }
+  });
+});
+
+// @desc    Book a slot (offline booking by owner)
+// @route   POST /api/turfs/:id/slots/book
+// @access  Private/Owner
+exports.bookSlot = asyncHandler(async (req, res, next) => {
+  const { date, startTime, endTime, customerName, customerPhone, customerEmail, price, notes } = req.body;
+  
+  if (!date || !startTime || !endTime || !customerName || !customerPhone) {
+    return next(new ErrorResponse('Date, start time, end time, customer name, and customer phone are required', 400));
+  }
+
+  // Restrict offline booking to current date only
+  const today = new Date();
+  const toYmd = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).toISOString().slice(0,10);
+  const reqYmd = (() => { try { const d = new Date(date); return toYmd(d); } catch { return null; } })();
+  const todayYmd = toYmd(today);
+  if (reqYmd !== todayYmd) {
+    return next(new ErrorResponse('Offline bookings are allowed only for today', 400));
+  }
+
+  const turf = await Turf.findById(req.params.id);
+  
+  if (!turf) {
+    return next(new ErrorResponse(`Turf not found with id of ${req.params.id}`, 404));
+  }
+
+  // Check if user is the owner of this turf
+  if (turf.ownerId.toString() !== req.user.id) {
+    return next(new ErrorResponse('Not authorized to book slots for this turf', 403));
+  }
+
+  const bookingDate = new Date(date);
+  const dayOfWeek = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'][bookingDate.getDay()];
+  
+  try {
+    // Check if slot is available
+    const isAvailable = turf.isSlotAvailable(bookingDate, dayOfWeek, startTime, endTime);
+    if (!isAvailable) {
+      return next(new ErrorResponse('Slot is not available for booking', 400));
+    }
+
+    // Get slot price if not provided
+    const daySlots = turf.availableSlots[dayOfWeek];
+    const slot = daySlots.slots.find(s => s.startTime === startTime && s.endTime === endTime);
+    const slotPrice = price || slot.price || turf.pricePerHour;
+
+    // Create booking record (persist first)
+    const booking = await Booking.create({
+      turfId: turf._id,
+      ownerId: turf.ownerId,
+      customerInfo: {
+        name: customerName,
+        phone: customerPhone,
+        email: customerEmail || ''
+      },
+      bookingDate,
+      startTime,
+      endTime,
+      pricePerHour: slotPrice,
+      status: 'confirmed',
+      paymentStatus: 'pending',
+      paymentMethod: 'cash',
+      bookingType: 'offline',
+      notes: notes || ''
+    });
+
+    // Update turf slot status (mutate then save once)
+    turf.bookSlot(bookingDate, dayOfWeek, startTime, endTime, booking._id);
+    await turf.save();
+    
+    res.status(200).json({
+      success: true,
+      message: 'Slot booked successfully',
+      data: {
+        bookingId: booking._id,
+        date,
+        startTime,
+        endTime,
+        customerName,
+        customerPhone,
+        totalAmount: booking.totalAmount
+      }
+    });
+  } catch (error) {
+    return next(new ErrorResponse(error.message, 400));
+  }
+});
+
+// @desc    Cancel a slot booking
+// @route   DELETE /api/turfs/:id/slots/cancel
+// @access  Private/Owner
+exports.cancelSlotBooking = asyncHandler(async (req, res, next) => {
+  const { date, startTime, endTime, bookingId, reason } = req.body;
+  
+  if (!date || !startTime || !endTime) {
+    return next(new ErrorResponse('Date, start time, and end time are required', 400));
+  }
+
+  const turf = await Turf.findById(req.params.id);
+  
+  if (!turf) {
+    return next(new ErrorResponse(`Turf not found with id of ${req.params.id}`, 404));
+  }
+
+  // Check if user is the owner of this turf
+  if (turf.ownerId.toString() !== req.user.id) {
+    return next(new ErrorResponse('Not authorized to cancel bookings for this turf', 403));
+  }
+
+  const bookingDate = new Date(date);
+  const dayOfWeek = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'][bookingDate.getDay()];
+  
+  try {
+    // Find and cancel the booking record if bookingId is provided
+    if (bookingId) {
+      const booking = await Booking.findById(bookingId);
+      if (booking && booking.turfId.toString() === turf._id.toString()) {
+        await booking.cancelBooking(req.user.id, reason || 'Cancelled by owner');
+      }
+    } else {
+      // Find booking by date and time
+      const booking = await Booking.findOne({
+        turfId: turf._id,
+        bookingDate,
+        startTime,
+        endTime,
+        status: { $ne: 'cancelled' }
+      });
+      
+      if (booking) {
+        await booking.cancelBooking(req.user.id, reason || 'Cancelled by owner');
+      }
+    }
+
+    // Update turf slot status
+    turf.cancelSlotBooking(bookingDate, dayOfWeek, startTime, endTime);
+    await turf.save();
+    
+    res.status(200).json({
+      success: true,
+      message: 'Booking cancelled successfully',
+      data: {
+        date,
+        startTime,
+        endTime
+      }
+    });
+  } catch (error) {
+    return next(new ErrorResponse(error.message, 400));
+  }
+});
+
+// @desc    Get bookings for a turf on a specific date
+// @route   GET /api/turfs/:id/bookings
+// @access  Private/Owner
+exports.getTurfBookings = asyncHandler(async (req, res, next) => {
+  const { date, status } = req.query;
+  
+  if (!date) {
+    return next(new ErrorResponse('Date is required', 400));
+  }
+
+  const turf = await Turf.findById(req.params.id);
+  
+  if (!turf) {
+    return next(new ErrorResponse(`Turf not found with id of ${req.params.id}`, 404));
+  }
+
+  // Check if user is the owner of this turf
+  if (turf.ownerId.toString() !== req.user.id) {
+    return next(new ErrorResponse('Not authorized to view bookings for this turf', 403));
+  }
+
+  try {
+    // Use the new Booking model for better data retrieval
+    const bookings = await Booking.findByTurf(req.params.id, { date, status });
+    
+    res.status(200).json({
+      success: true,
+      count: bookings.length,
+      data: {
+        date,
+        bookings
+      }
+    });
+  } catch (error) {
+    return next(new ErrorResponse(error.message, 500));
+  }
+});
+
+// @desc    Get all bookings for owner's turfs
+// @route   GET /api/turfs/owner/bookings
+// @access  Private/Owner
+exports.getOwnerBookings = asyncHandler(async (req, res, next) => {
+  const { date, turfId, status, limit = 50, page = 1 } = req.query;
+  
+  try {
+    // Use the new Booking model for efficient data retrieval
+    const options = { 
+      date, 
+      status, 
+      turfId 
+    };
+    
+    // Get bookings using the Booking model
+    const bookings = await Booking.findByOwner(req.user.id, options)
+      .limit(parseInt(limit))
+      .skip((parseInt(page) - 1) * parseInt(limit));
+    
+    // Get total count for pagination
+    const totalBookings = await Booking.countDocuments({
+      ownerId: req.user.id,
+      ...(date && {
+        bookingDate: {
+          $gte: new Date(date + 'T00:00:00.000Z'),
+          $lte: new Date(date + 'T23:59:59.999Z')
+        }
+      }),
+      ...(status && { status }),
+      ...(turfId && { turfId })
+    });
+    
+    res.status(200).json({
+      success: true,
+      count: bookings.length,
+      total: totalBookings,
+      page: parseInt(page),
+      pages: Math.ceil(totalBookings / parseInt(limit)),
+      data: bookings
+    });
+  } catch (error) {
+    return next(new ErrorResponse(error.message, 500));
+  }
 });

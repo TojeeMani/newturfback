@@ -26,6 +26,8 @@ exports.register = async (req, res, next) => {
       businessPhone,
       turfCount,
       turfLocation,
+      sportType,
+      sportTypes,
       agreeToTerms,
       agreeToMarketing,
       govIdFileUrl,
@@ -76,6 +78,16 @@ console.log(req.body)
       userData.businessPhone = businessPhone;
       userData.turfCount = turfCount;
       userData.turfLocation = turfLocation;
+      
+      // Handle multiple sport types
+      if (sportTypes && sportTypes.length > 0) {
+        userData.sportTypes = sportTypes;
+        userData.sportType = sportTypes[0]; // Set first sport type for backward compatibility
+      } else if (sportType) {
+        userData.sportType = sportType;
+        userData.sportTypes = [sportType]; // Convert single sport type to array
+      }
+      
       userData.isApprovedByAdmin = false;
       userData.adminApprovalStatus = 'pending';
     }
@@ -228,6 +240,18 @@ exports.login = async (req, res, next) => {
     user.lastLogin = new Date();
     await user.save();
 
+    console.log('🔧 Backend login: User data being returned:', {
+      id: user._id,
+      firstName: user.firstName,
+      lastName: user.lastName,
+      email: user.email,
+      userType: user.userType,
+      businessName: user.businessName,
+      turfLocation: user.turfLocation,
+      sportType: user.sportType,
+      sportTypes: user.sportTypes
+    });
+
     res.status(200).json({
       success: true,
       message: 'Login successful',
@@ -241,7 +265,12 @@ exports.login = async (req, res, next) => {
         userType: user.userType,
         isEmailVerified: user.isEmailVerified,
         isApprovedByAdmin: user.isApprovedByAdmin,
-        adminApprovalStatus: user.adminApprovalStatus
+        adminApprovalStatus: user.adminApprovalStatus,
+        businessName: user.businessName,
+        turfLocation: user.turfLocation,
+        sportType: user.sportType,
+        sportTypes: user.sportTypes,
+        sportTypes: user.sportTypes
       }
     });
   } catch (error) {
@@ -483,7 +512,10 @@ exports.loginWithOTP = async (req, res, next) => {
         userType: user.userType,
         isEmailVerified: user.isEmailVerified,
         isApprovedByAdmin: user.isApprovedByAdmin,
-        adminApprovalStatus: user.adminApprovalStatus
+        adminApprovalStatus: user.adminApprovalStatus,
+        businessName: user.businessName,
+        turfLocation: user.turfLocation,
+        sportType: user.sportType
       }
     });
   } catch (error) {
@@ -657,6 +689,9 @@ exports.firebaseAuth = async (req, res, next) => {
           preferredSports: user.preferredSports,
           skillLevel: user.skillLevel,
           location: user.location,
+          businessName: user.businessName,
+          turfLocation: user.turfLocation,
+          sportType: user.sportType,
           needsProfileCompletion: !user.phone || user.phone === '0000000000' || !user.preferredSports || user.preferredSports.length === 0
         }
       });
@@ -748,6 +783,9 @@ exports.firebaseAuth = async (req, res, next) => {
           preferredSports: user.preferredSports,
           skillLevel: user.skillLevel,
           location: user.location,
+          businessName: user.businessName,
+          turfLocation: user.turfLocation,
+          sportType: user.sportType,
           needsProfileCompletion: true
         }
       });
@@ -799,6 +837,9 @@ exports.updateProfile = async (req, res, next) => {
       turfLocation
     } = req.body;
 
+    console.log('🔧 Backend updateProfile - Request body:', req.body);
+    console.log('🔧 Backend updateProfile - Avatar field:', avatar);
+
     const user = await User.findById(req.user.id);
 
     if (!user) {
@@ -808,12 +849,17 @@ exports.updateProfile = async (req, res, next) => {
       });
     }
 
+    console.log('🔧 Backend updateProfile - Current user avatar:', user.avatar);
+
     // Update common fields
     if (firstName) user.firstName = firstName;
     if (lastName) user.lastName = lastName;
     if (phone) user.phone = phone;
     if (location) user.location = location;
-    if (avatar) user.avatar = avatar;
+    if (avatar !== undefined) {
+      user.avatar = avatar;
+      console.log('🔧 Backend updateProfile - Updated avatar to:', user.avatar);
+    }
 
     // Update player-specific fields
     if (user.userType === 'player') {
@@ -832,17 +878,20 @@ exports.updateProfile = async (req, res, next) => {
 
     await user.save();
 
+    console.log('🔧 Backend updateProfile - User saved, avatar is now:', user.avatar);
+
     // Determine if profile completion is needed based on user type
+    // For personal profile updates, we only check basic personal information
     let needsProfileCompletion = false;
     if (user.userType === 'player') {
       needsProfileCompletion = !user.phone || user.phone === '0000000000' ||
                               !user.preferredSports || user.preferredSports.length === 0 ||
                               !user.skillLevel || !user.location;
     } else if (user.userType === 'owner') {
+      // For owners, only check basic personal info for profile completion
+      // Business info is handled separately in the owner dashboard
       needsProfileCompletion = !user.phone || user.phone === '0000000000' ||
-                              !user.businessName || !user.businessAddress ||
-                              !user.businessPhone || !user.turfCount ||
-                              !user.location || !user.turfLocation;
+                              !user.location;
     }
 
     // Build response object with common fields
@@ -863,14 +912,17 @@ exports.updateProfile = async (req, res, next) => {
 
     // Add user-type specific fields
     if (user.userType === 'player') {
-      responseUser.preferredSports = user.preferredSports;
-      responseUser.skillLevel = user.skillLevel;
+      responseUser.preferredSports = user.preferredSports || [];
+      responseUser.skillLevel = user.skillLevel || '';
     } else if (user.userType === 'owner') {
-      responseUser.businessName = user.businessName;
-      responseUser.businessAddress = user.businessAddress;
-      responseUser.businessPhone = user.businessPhone;
-      responseUser.turfCount = user.turfCount;
-      responseUser.turfLocation = user.turfLocation;
+      // Only include business fields if they exist
+      if (user.businessName) responseUser.businessName = user.businessName;
+      if (user.businessAddress) responseUser.businessAddress = user.businessAddress;
+      if (user.businessPhone) responseUser.businessPhone = user.businessPhone;
+      if (user.turfCount) responseUser.turfCount = user.turfCount;
+      if (user.turfLocation) responseUser.turfLocation = user.turfLocation;
+      if (user.sportType) responseUser.sportType = user.sportType;
+      if (user.sportTypes) responseUser.sportTypes = user.sportTypes;
     }
 
     res.status(200).json({
@@ -878,6 +930,8 @@ exports.updateProfile = async (req, res, next) => {
       message: 'Profile updated successfully',
       user: responseUser
     });
+
+    console.log('🔧 Backend updateProfile - Response sent with avatar:', responseUser.avatar);
   } catch (error) {
     next(error);
   }
@@ -889,6 +943,17 @@ exports.updateProfile = async (req, res, next) => {
 exports.getMe = async (req, res, next) => {
   try {
     const user = await User.findById(req.user.id);
+    
+    console.log('🔧 Backend getMe: User found:', {
+      id: user._id,
+      firstName: user.firstName,
+      lastName: user.lastName,
+      email: user.email,
+      userType: user.userType,
+      businessName: user.businessName,
+      turfLocation: user.turfLocation,
+      sportType: user.sportType
+    });
 
     res.status(200).json({
       success: true,

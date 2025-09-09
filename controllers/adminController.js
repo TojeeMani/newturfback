@@ -1,4 +1,5 @@
 const User = require('../models/User');
+const Turf = require('../models/Turf');
 const { sendOwnerApprovalEmail, sendOwnerRejectionEmail } = require('../utils/emailService');
 
 // @desc    Get all registered users
@@ -188,6 +189,28 @@ exports.updateOwnerApproval = async (req, res, next) => {
 
     await owner.save();
 
+    // Update all turfs belonging to this owner
+    try {
+      if (status === 'rejected') {
+        // Hide all turfs from rejected owners
+        await Turf.updateMany(
+          { ownerId: owner._id },
+          { isApproved: false }
+        );
+        console.log(`🏟️ Hidden all turfs for rejected owner: ${owner.email}`);
+      } else if (status === 'approved') {
+        // Show all turfs from approved owners (they can choose to approve individually later)
+        await Turf.updateMany(
+          { ownerId: owner._id },
+          { isApproved: true }
+        );
+        console.log(`🏟️ Made all turfs visible for approved owner: ${owner.email}`);
+      }
+    } catch (turfUpdateError) {
+      console.error('❌ Error updating turfs visibility:', turfUpdateError);
+      // Don't fail the approval/rejection if turf update fails
+    }
+
     // Send email notification
     try {
       if (status === 'approved') {
@@ -306,4 +329,84 @@ exports.getOwnerDetails = async (req, res, next) => {
   } catch (error) {
     next(error);
   }
-}; 
+};
+
+// @desc    Get turfs with pending changes
+// @route   GET /api/admin/turfs/pending-changes
+// @access  Private/Admin
+exports.getTurfsWithPendingChanges = async (req, res, next) => {
+  try {
+    const turfs = await Turf.find({
+      changesApprovalStatus: 'pending'
+    }).populate('ownerId', 'firstName lastName email businessName');
+
+    res.status(200).json({
+      success: true,
+      count: turfs.length,
+      data: turfs
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+// @desc    Approve/Reject turf changes
+// @route   PUT /api/admin/turfs/:id/approve-changes
+// @access  Private/Admin
+exports.approveTurfChanges = async (req, res, next) => {
+  try {
+    const { status, notes } = req.body; // status: 'approved' or 'rejected'
+
+    if (!['approved', 'rejected'].includes(status)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Status must be either approved or rejected'
+      });
+    }
+
+    const turf = await Turf.findById(req.params.id);
+
+    if (!turf) {
+      return res.status(404).json({
+        success: false,
+        message: `Turf not found with id of ${req.params.id}`
+      });
+    }
+
+    if (turf.changesApprovalStatus !== 'pending') {
+      return res.status(400).json({
+        success: false,
+        message: 'No pending changes to approve/reject'
+      });
+    }
+
+    if (status === 'approved') {
+      // Apply pending changes to the turf
+      for (const [key, value] of turf.pendingChanges.entries()) {
+        turf[key] = value;
+      }
+      turf.pendingChanges.clear();
+      turf.changesApprovalStatus = 'approved';
+      turf.changeApprovalNotes = notes || 'Changes approved by admin';
+
+      console.log(`✅ Admin approved turf changes for: ${turf.name}`);
+    } else {
+      // Reject changes
+      turf.pendingChanges.clear();
+      turf.changesApprovalStatus = 'rejected';
+      turf.changeApprovalNotes = notes || 'Changes rejected by admin';
+
+      console.log(`❌ Admin rejected turf changes for: ${turf.name}`);
+    }
+
+    await turf.save();
+
+    res.status(200).json({
+      success: true,
+      data: turf,
+      message: `Turf changes ${status} successfully`
+    });
+  } catch (error) {
+    next(error);
+  }
+};
