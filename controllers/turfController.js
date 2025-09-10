@@ -823,3 +823,88 @@ exports.getOwnerBookings = asyncHandler(async (req, res, next) => {
     return next(new ErrorResponse(error.message, 500));
   }
 });
+
+// @desc    Allocate slots for a specific day
+// @route   POST /api/turfs/:id/slots/allocate
+// @access  Private/Owner
+exports.allocateSlotsForDay = asyncHandler(async (req, res, next) => {
+  const { date, slots } = req.body;
+  
+  if (!date || !slots || !Array.isArray(slots) || slots.length === 0) {
+    return next(new ErrorResponse('Date and slots array are required', 400));
+  }
+
+  // Validate date is within allowed range (next 5 days)
+  const today = new Date();
+  const maxDate = new Date();
+  maxDate.setDate(today.getDate() + 5);
+  
+  const allocationDate = new Date(date);
+  if (allocationDate < today || allocationDate > maxDate) {
+    return next(new ErrorResponse('You can only allocate slots for the next 5 days from today', 400));
+  }
+
+  const turf = await Turf.findById(req.params.id);
+  
+  if (!turf) {
+    return next(new ErrorResponse(`Turf not found with id of ${req.params.id}`, 404));
+  }
+
+  // Check if user is the owner of this turf
+  if (turf.ownerId.toString() !== req.user.id) {
+    return next(new ErrorResponse('Not authorized to allocate slots for this turf', 403));
+  }
+
+  const dayOfWeek = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'][allocationDate.getDay()];
+  
+  try {
+    // Validate all slots
+    for (const slot of slots) {
+      if (!slot.startTime || !slot.endTime || !slot.price) {
+        return next(new ErrorResponse('Each slot must have startTime, endTime, and price', 400));
+      }
+      
+      if (slot.startTime >= slot.endTime) {
+        return next(new ErrorResponse('End time must be after start time', 400));
+      }
+      
+      if (slot.price <= 0) {
+        return next(new ErrorResponse('Price must be greater than 0', 400));
+      }
+    }
+
+    // Check if day is open
+    const daySlots = turf.availableSlots[dayOfWeek];
+    if (!daySlots || !daySlots.isOpen) {
+      return next(new ErrorResponse(`Turf is closed on ${dayOfWeek}`, 400));
+    }
+
+    // Add slots to the day
+    const newSlots = slots.map(slot => ({
+      startTime: slot.startTime,
+      endTime: slot.endTime,
+      price: slot.price,
+      isBooked: false,
+      bookedBy: null,
+      bookingDate: null
+    }));
+
+    // Add new slots to existing slots
+    turf.availableSlots[dayOfWeek].slots.push(...newSlots);
+    
+    await turf.save();
+    
+    res.status(200).json({
+      success: true,
+      message: 'Slots allocated successfully',
+      data: {
+        date,
+        dayOfWeek,
+        allocatedSlots: newSlots.length,
+        totalSlots: turf.availableSlots[dayOfWeek].slots.length
+      }
+    });
+  } catch (error) {
+    return next(new ErrorResponse(error.message, 400));
+  }
+});

@@ -15,7 +15,8 @@ const {
   bookSlot,
   cancelSlotBooking,
   getTurfBookings,
-  getOwnerBookings
+  getOwnerBookings,
+  allocateSlotsForDay
 } = require('../controllers/turfController');
 
 const router = express.Router();
@@ -38,6 +39,7 @@ router.put('/:id', authorize('owner'), updateTurf);
 router.delete('/:id', authorize('owner'), deleteTurf);
 router.get('/:id/bookings', authorize('owner'), getTurfBookings);
 router.post('/:id/slots/book', authorize('owner'), bookSlot);
+router.post('/:id/slots/allocate', authorize('owner'), allocateSlotsForDay);
 router.delete('/:id/slots/cancel', authorize('owner'), cancelSlotBooking);
 
 // Admin routes
