@@ -824,6 +824,312 @@ exports.getOwnerBookings = asyncHandler(async (req, res, next) => {
   }
 });
 
+// @desc    Get owner analytics data
+// @route   GET /api/turfs/owner/analytics
+// @access  Private/Owner
+exports.getOwnerAnalytics = asyncHandler(async (req, res, next) => {
+  try {
+    const { period = '30d' } = req.query;
+    
+    // Calculate date range based on period
+    const now = new Date();
+    let startDate;
+    
+    switch (period) {
+      case '7d':
+        startDate = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+        break;
+      case '30d':
+        startDate = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+        break;
+      case '90d':
+        startDate = new Date(now.getTime() - 90 * 24 * 60 * 60 * 1000);
+        break;
+      case '1y':
+        startDate = new Date(now.getTime() - 365 * 24 * 60 * 60 * 1000);
+        break;
+      default:
+        startDate = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+    }
+
+    // Get owner's turfs
+    const turfs = await Turf.find({ ownerId: req.user.id });
+    const turfIds = turfs.map(turf => turf._id);
+
+    // Get booking statistics
+    const totalBookings = await Booking.countDocuments({
+      ownerId: req.user.id,
+      bookingDate: { $gte: startDate }
+    });
+
+    const confirmedBookings = await Booking.countDocuments({
+      ownerId: req.user.id,
+      status: 'confirmed',
+      bookingDate: { $gte: startDate }
+    });
+
+    const cancelledBookings = await Booking.countDocuments({
+      ownerId: req.user.id,
+      status: 'cancelled',
+      bookingDate: { $gte: startDate }
+    });
+
+    // Calculate revenue
+    const revenueData = await Booking.aggregate([
+      {
+        $match: {
+          ownerId: req.user._id,
+          status: 'confirmed',
+          bookingDate: { $gte: startDate }
+        }
+      },
+      {
+        $group: {
+          _id: null,
+          totalRevenue: { $sum: '$totalAmount' },
+          averageBookingValue: { $avg: '$totalAmount' }
+        }
+      }
+    ]);
+
+    const totalRevenue = revenueData.length > 0 ? revenueData[0].totalRevenue : 0;
+    const averageBookingValue = revenueData.length > 0 ? revenueData[0].averageBookingValue : 0;
+
+    // Get booking trends by day
+    const bookingTrends = await Booking.aggregate([
+      {
+        $match: {
+          ownerId: req.user._id,
+          bookingDate: { $gte: startDate }
+        }
+      },
+      {
+        $group: {
+          _id: {
+            year: { $year: '$bookingDate' },
+            month: { $month: '$bookingDate' },
+            day: { $dayOfMonth: '$bookingDate' }
+          },
+          bookings: { $sum: 1 },
+          revenue: { $sum: '$totalAmount' }
+        }
+      },
+      {
+        $sort: { '_id.year': 1, '_id.month': 1, '_id.day': 1 }
+      }
+    ]);
+
+    // Get popular time slots
+    const popularSlots = await Booking.aggregate([
+      {
+        $match: {
+          ownerId: req.user._id,
+          status: 'confirmed',
+          bookingDate: { $gte: startDate }
+        }
+      },
+      {
+        $group: {
+          _id: '$startTime',
+          count: { $sum: 1 },
+          revenue: { $sum: '$totalAmount' }
+        }
+      },
+      {
+        $sort: { count: -1 }
+      },
+      {
+        $limit: 10
+      }
+    ]);
+
+    // Get turf performance
+    const turfPerformance = await Booking.aggregate([
+      {
+        $match: {
+          ownerId: req.user._id,
+          status: 'confirmed',
+          bookingDate: { $gte: startDate }
+        }
+      },
+      {
+        $group: {
+          _id: '$turfId',
+          bookings: { $sum: 1 },
+          revenue: { $sum: '$totalAmount' }
+        }
+      },
+      {
+        $lookup: {
+          from: 'turfs',
+          localField: '_id',
+          foreignField: '_id',
+          as: 'turf'
+        }
+      },
+      {
+        $unwind: '$turf'
+      },
+      {
+        $project: {
+          turfName: '$turf.name',
+          bookings: 1,
+          revenue: 1
+        }
+      },
+      {
+        $sort: { bookings: -1 }
+      }
+    ]);
+
+    res.status(200).json({
+      success: true,
+      data: {
+        period,
+        summary: {
+          totalBookings,
+          confirmedBookings,
+          cancelledBookings,
+          totalRevenue,
+          averageBookingValue,
+          totalTurfs: turfs.length,
+          activeTurfs: turfs.filter(turf => turf.isApproved).length
+        },
+        trends: bookingTrends,
+        popularSlots,
+        turfPerformance
+      }
+    });
+  } catch (error) {
+    return next(new ErrorResponse(error.message, 500));
+  }
+});
+
+// @desc    Get owner customers data
+// @route   GET /api/turfs/owner/customers
+// @access  Private/Owner
+exports.getOwnerCustomers = asyncHandler(async (req, res, next) => {
+  try {
+    const { page = 1, limit = 20, search = '' } = req.query;
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+
+    // Get unique customers who have booked owner's turfs
+    const customerPipeline = [
+      {
+        $match: {
+          ownerId: req.user._id,
+          status: 'confirmed'
+        }
+      },
+      {
+        $group: {
+          _id: '$customerId',
+          totalBookings: { $sum: 1 },
+          totalSpent: { $sum: '$totalAmount' },
+          lastBooking: { $max: '$bookingDate' },
+          firstBooking: { $min: '$bookingDate' }
+        }
+      },
+      {
+        $lookup: {
+          from: 'users',
+          localField: '_id',
+          foreignField: '_id',
+          as: 'customer'
+        }
+      },
+      {
+        $unwind: '$customer'
+      },
+      {
+        $project: {
+          customerId: '$_id',
+          customerName: { $concat: ['$customer.firstName', ' ', '$customer.lastName'] },
+          customerEmail: '$customer.email',
+          customerPhone: '$customer.phone',
+          totalBookings: 1,
+          totalSpent: 1,
+          lastBooking: 1,
+          firstBooking: 1,
+          avgBookingValue: { $divide: ['$totalSpent', '$totalBookings'] }
+        }
+      },
+      {
+        $sort: { totalSpent: -1 }
+      }
+    ];
+
+    // Add search filter if provided
+    if (search) {
+      customerPipeline.splice(6, 0, {
+        $match: {
+          $or: [
+            { 'customer.firstName': { $regex: search, $options: 'i' } },
+            { 'customer.lastName': { $regex: search, $options: 'i' } },
+            { 'customer.email': { $regex: search, $options: 'i' } }
+          ]
+        }
+      });
+    }
+
+    // Get total count
+    const countPipeline = [...customerPipeline, { $count: 'total' }];
+    const countResult = await Booking.aggregate(countPipeline);
+    const totalCustomers = countResult.length > 0 ? countResult[0].total : 0;
+
+    // Add pagination
+    customerPipeline.push(
+      { $skip: skip },
+      { $limit: parseInt(limit) }
+    );
+
+    const customers = await Booking.aggregate(customerPipeline);
+
+    // Get customer statistics
+    const statsPipeline = [
+      {
+        $match: {
+          ownerId: req.user._id,
+          status: 'confirmed'
+        }
+      },
+      {
+        $group: {
+          _id: '$customerId',
+          totalSpent: { $sum: '$totalAmount' }
+        }
+      },
+      {
+        $group: {
+          _id: null,
+          totalCustomers: { $sum: 1 },
+          totalRevenue: { $sum: '$totalSpent' },
+          avgCustomerValue: { $avg: '$totalSpent' }
+        }
+      }
+    ];
+
+    const statsResult = await Booking.aggregate(statsPipeline);
+    const stats = statsResult.length > 0 ? statsResult[0] : {
+      totalCustomers: 0,
+      totalRevenue: 0,
+      avgCustomerValue: 0
+    };
+
+    res.status(200).json({
+      success: true,
+      count: customers.length,
+      total: totalCustomers,
+      page: parseInt(page),
+      pages: Math.ceil(totalCustomers / parseInt(limit)),
+      stats,
+      data: customers
+    });
+  } catch (error) {
+    return next(new ErrorResponse(error.message, 500));
+  }
+});
+
 // @desc    Allocate slots for a specific day
 // @route   POST /api/turfs/:id/slots/allocate
 // @access  Private/Owner
