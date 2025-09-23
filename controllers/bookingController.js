@@ -1,4 +1,5 @@
 const Turf = require('../models/Turf');
+const Match = require('../models/Match');
 const Booking = require('../models/Booking');
 const asyncHandler = require('../middleware/async');
 const ErrorResponse = require('../utils/errorResponse');
@@ -39,7 +40,7 @@ exports.getBooking = asyncHandler(async (req, res, next) => {
 // @route   POST /api/bookings
 // @access  Private
 exports.createBooking = asyncHandler(async (req, res, next) => {
-  const { turfId, date, startTime, endTime, paymentMethod, slots } = req.body;
+  const { turfId, date, startTime, endTime, paymentMethod, slots, teams } = req.body;
 
   const isBulk = Array.isArray(slots) && slots.length > 0;
 
@@ -112,6 +113,45 @@ exports.createBooking = asyncHandler(async (req, res, next) => {
 
     await turf.bookSlot(sDate, sDay, s.startTime, s.endTime, booking._id);
     await turf.save();
+    
+    // Auto-create a match for this booking (one per slot)
+    try {
+      const startDateTime = new Date(sDate);
+      const [sh, sm] = String(s.startTime || '').split(':');
+      startDateTime.setHours(parseInt(sh || '0'), parseInt(sm || '0'), 0, 0);
+      const endDateTime = new Date(sDate);
+      const [eh, em] = String(s.endTime || '').split(':');
+      endDateTime.setHours(parseInt(eh || '0'), parseInt(em || '0'), 0, 0);
+
+      const providedTeams = Array.isArray(teams) && teams.length >= 2 ? teams.slice(0,2) : [];
+      const defaultTeams = [
+        { name: 'Team A', score: 0, players: [], captain: '' },
+        { name: 'Team B', score: 0, players: [], captain: '' }
+      ];
+
+      await Match.create({
+        turfId: turf._id,
+        ownerId: turf.ownerId,
+        bookingId: booking._id,
+        customerId: req.user.id,
+        customerName: `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email || 'Customer',
+        matchName: `${turf.name} Match` ,
+        matchType: (turf.sport || 'football').toLowerCase(),
+        startTime: startDateTime,
+        endTime: endDateTime,
+        teams: (providedTeams.length ? providedTeams : defaultTeams).map(t => ({
+          name: t.name || 'Team',
+          score: 0,
+          players: Array.isArray(t.players) ? t.players : (typeof t.players === 'string' ? t.players.split(',').map(p=>p.trim()).filter(Boolean) : []),
+          captain: t.captain || ''
+        })),
+        isPublic: true,
+        status: 'scheduled'
+      });
+    } catch (e) {
+      // Non-fatal if match creation fails
+      console.warn('Match auto-create failed:', e.message);
+    }
     created.push(booking);
   }
 

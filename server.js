@@ -12,6 +12,7 @@ const authRoutes = require('./routes/auth');
 const userRoutes = require('./routes/users');
 const turfRoutes = require('./routes/turfs');
 const bookingRoutes = require('./routes/bookings');
+const matchRoutes = require('./routes/matches');
 const adminRoutes = require('./routes/admin');
 const uploadRoutes = require('./routes/upload');
 const chatRoutes = require('./routes/chat');
@@ -19,6 +20,7 @@ const chatRoutes = require('./routes/chat');
 // Import middleware
 const errorHandler = require('./middleware/errorHandler');
 const Booking = require('./models/Booking');
+const Match = require('./models/Match');
 
 const app = express();
 
@@ -90,6 +92,7 @@ app.use('/api/auth', authRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/turfs', turfRoutes);
 app.use('/api/bookings', bookingRoutes);
+app.use('/api/matches', matchRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/upload', uploadRoutes);
 app.use('/api/chat', chatRoutes);
@@ -202,3 +205,26 @@ setInterval(async () => {
     console.warn('Auto-complete error:', e.message);
   }
 }, 5 * 60 * 1000);
+
+// Auto-transition matches: runs every 1 minute
+setInterval(async () => {
+  try {
+    const now = new Date();
+    const candidates = await Match.find({ status: { $in: ['scheduled', 'live'] } });
+    let updated = 0;
+    for (const m of candidates) {
+      if (m.startTime <= now && m.endTime > now && m.status !== 'live') {
+        m.status = 'live';
+        await m.save();
+        updated++;
+      } else if (m.endTime <= now && m.status !== 'completed') {
+        m.status = 'completed';
+        await m.save();
+        updated++;
+      }
+    }
+    if (updated) console.log(`Auto-status updates applied to ${updated} matches`);
+  } catch (e) {
+    console.warn('Match auto-status error:', e.message);
+  }
+}, 60 * 1000);

@@ -35,7 +35,7 @@ const createMatch = asyncHandler(async (req, res) => {
 // @route   GET /api/matches
 // @access  Public
 const getMatches = asyncHandler(async (req, res) => {
-  const { status, matchType, turfId, ownerId, customerId, window, limit, isPublic } = req.query;
+  const { status, matchType, turfId, ownerId, customerId, window, limit, isPublic, day, date } = req.query;
 
   const now = new Date();
   let orConditions = [];
@@ -54,8 +54,23 @@ const getMatches = asyncHandler(async (req, res) => {
       { startTime: { $lte: now }, endTime: { $gte: now } }
     ];
   } else if (window === 'upcoming') {
-    query.startTime = { $gte: now };
+    // Upcoming: from now onwards
     query.status = query.status || 'scheduled';
+
+    // Optional: constrain to today or a specific date
+    if (day === 'today' || date) {
+      const target = date ? new Date(date) : new Date();
+      const startOfDay = new Date(target);
+      startOfDay.setHours(0, 0, 0, 0);
+      const endOfDay = new Date(target);
+      endOfDay.setHours(23, 59, 59, 999);
+      // Start time should be between now and end of the specified day
+      const lowerBound = (day === 'today' && !date) ? now : startOfDay;
+      query.startTime = { $gte: lowerBound, $lte: endOfDay };
+    } else {
+      // Default upcoming (no day constraint)
+      query.startTime = { $gte: now };
+    }
   }
 
   const baseQuery = orConditions.length > 0 ? { $or: orConditions, ...query } : query;
