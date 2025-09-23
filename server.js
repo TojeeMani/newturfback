@@ -168,6 +168,33 @@ setInterval(async () => {
         b.status = 'completed';
         await b.save();
         updated++;
+        // Send thank-you email with review link (best-effort)
+        if (!b.reviewEmailSent) {
+          try {
+            const { sendEmail } = require('./utils/emailService');
+            const baseUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+            const reviewUrl = `${baseUrl}/turfs/${b.turfId?.toString()}?review=1`;
+            await sendEmail({
+              email: b.customerInfo?.email || '',
+              subject: 'Thanks for playing! Rate your turf',
+              html: `<div style="font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;background:#f9fafb;padding:20px">
+                <div style="max-width:640px;margin:0 auto;background:#fff;border:1px solid #e5e7eb;border-radius:12px;overflow:hidden">
+                  <div style="background:#10b981;color:#fff;padding:16px 20px;font-weight:700">TurfEase</div>
+                  <div style="padding:20px;color:#111827;">
+                    <h2 style="margin:0 0 10px 0;font-size:18px">Thank you for your booking</h2>
+                    <p style="margin:0 0 12px 0;color:#4b5563">We hope you enjoyed your session. Please take a moment to rate the turf and share your feedback.</p>
+                    <a href="${reviewUrl}" style="display:inline-block;background:#10b981;color:#fff;text-decoration:none;padding:10px 16px;border-radius:10px;font-weight:600">Rate & Review</a>
+                  </div>
+                </div>
+              </div>`,
+              text: `Thanks for your booking. Please rate your turf: ${reviewUrl}`
+            });
+            b.reviewEmailSent = true;
+            await b.save();
+          } catch (e) {
+            // Non-fatal
+          }
+        }
       }
     }
     if (updated) console.log(`Auto-status updates applied to ${updated} bookings`);

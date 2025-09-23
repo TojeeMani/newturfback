@@ -549,7 +549,18 @@ exports.checkSlotAvailability = asyncHandler(async (req, res, next) => {
   const bookingDate = new Date(date);
   const dayOfWeek = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'][bookingDate.getDay()];
   
-  const isAvailable = turf.isSlotAvailable(bookingDate, dayOfWeek, startTime, endTime);
+  // Check if it's today and slot time has passed
+  const today = new Date();
+  const isToday = bookingDate.toDateString() === today.toDateString();
+  let isAvailable = turf.isSlotAvailable(bookingDate, dayOfWeek, startTime, endTime);
+  
+  if (isToday && isAvailable) {
+    const currentTime = today.getHours() * 60 + today.getMinutes();
+    const slotStartTime = turf.parseTimeToMinutes(startTime);
+    if (slotStartTime <= currentTime) {
+      isAvailable = false; // Slot has passed
+    }
+  }
   
   res.status(200).json({
     success: true,
@@ -624,6 +635,13 @@ exports.bookSlot = asyncHandler(async (req, res, next) => {
   const dayOfWeek = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'][bookingDate.getDay()];
   
   try {
+    // Check if slot time has passed (for today's bookings)
+    const currentTime = today.getHours() * 60 + today.getMinutes();
+    const slotStartTime = turf.parseTimeToMinutes(startTime);
+    if (slotStartTime <= currentTime) {
+      return next(new ErrorResponse('Cannot book slots that have already passed', 400));
+    }
+    
     // Check if slot is available
     const isAvailable = turf.isSlotAvailable(bookingDate, dayOfWeek, startTime, endTime);
     if (!isAvailable) {

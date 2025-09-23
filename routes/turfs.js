@@ -22,6 +22,7 @@ const {
 } = require('../controllers/turfController');
 
 const router = express.Router();
+const reviewRoutes = require('./reviews');
 
 // Public routes
 router.get('/', getTurfs);
@@ -29,6 +30,7 @@ router.get('/nearby', getNearbyTurfs);
 router.get('/:id', getTurf);
 router.get('/:id/slots/check', checkSlotAvailability);
 router.get('/:id/slots/available', getAvailableSlots);
+router.use('/:id/reviews', reviewRoutes);
 
 // Protected routes
 router.use(protect);

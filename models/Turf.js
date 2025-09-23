@@ -420,6 +420,26 @@ TurfSchema.methods.cancelSlotBooking = function(date, dayOfWeek, startTime, endT
   return this;
 };
 
+// Helper method to parse time string to minutes
+TurfSchema.methods.parseTimeToMinutes = function(timeString) {
+  if (!timeString) return 0;
+  
+  // Handle formats like "10:30", "10:30 AM", "10:30 PM"
+  const time = timeString.replace(/\s*(AM|PM)\s*/i, '').trim();
+  const [hours, minutes] = time.split(':').map(Number);
+  
+  let totalMinutes = hours * 60 + (minutes || 0);
+  
+  // Handle AM/PM if present
+  if (timeString.toUpperCase().includes('PM') && hours !== 12) {
+    totalMinutes += 12 * 60; // Add 12 hours for PM
+  } else if (timeString.toUpperCase().includes('AM') && hours === 12) {
+    totalMinutes -= 12 * 60; // Subtract 12 hours for 12 AM
+  }
+  
+  return totalMinutes;
+};
+
 // Method to get available slots for a specific date
 TurfSchema.methods.getAvailableSlots = function(date) {
   const dayOfWeek = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'][date.getDay()];
@@ -429,13 +449,34 @@ TurfSchema.methods.getAvailableSlots = function(date) {
     return [];
   }
 
-  return daySlots.slots.filter(slot => 
-    !slot.isBooked || 
-    (slot.bookingDate && slot.bookingDate.toDateString() !== date.toDateString())
-  ).map(slot => ({
+  const today = new Date();
+  const isToday = date.toDateString() === today.toDateString();
+  const currentTime = today.getHours() * 60 + today.getMinutes(); // Current time in minutes
+
+  return daySlots.slots.filter(slot => {
+    // Check if slot is booked for this specific date
+    const isBookedForThisDate = slot.isBooked && 
+      slot.bookingDate && 
+      slot.bookingDate.toDateString() === date.toDateString();
+    
+    if (isBookedForThisDate) {
+      return false; // Don't show booked slots
+    }
+
+    // If it's today, filter out past time slots
+    if (isToday) {
+      const slotStartTime = this.parseTimeToMinutes(slot.startTime);
+      if (slotStartTime <= currentTime) {
+        return false; // Don't show past slots
+      }
+    }
+
+    return true;
+  }).map(slot => ({
     startTime: slot.startTime,
     endTime: slot.endTime,
-    price: slot.price
+    price: slot.price,
+    isAvailable: true
   }));
 };
 

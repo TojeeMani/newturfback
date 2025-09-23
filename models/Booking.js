@@ -131,6 +131,12 @@ const BookingSchema = new mongoose.Schema({
     enum: ['none', 'pending', 'processed', 'failed'],
     default: 'none'
   },
+  
+  // Post-completion email
+  reviewEmailSent: {
+    type: Boolean,
+    default: false
+  },
 
   // Verification helpers
   bookingCode: {

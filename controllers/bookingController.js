@@ -69,6 +69,18 @@ exports.createBooking = asyncHandler(async (req, res, next) => {
     if (!slot) {
       return next(new ErrorResponse('Selected slot is not available', 400));
     }
+    
+    // Check if it's today and slot time has passed
+    const today = new Date();
+    const isToday = sDate.toDateString() === today.toDateString();
+    if (isToday) {
+      const currentTime = today.getHours() * 60 + today.getMinutes();
+      const slotStartTime = turf.parseTimeToMinutes(s.startTime);
+      if (slotStartTime <= currentTime) {
+        return next(new ErrorResponse('Cannot book slots that have already passed', 400));
+      }
+    }
+    
     const isAvailable = turf.isSlotAvailable(sDate, sDay, s.startTime, s.endTime);
     if (!isAvailable) {
       return next(new ErrorResponse('One or more selected slots are already booked', 400));
@@ -99,6 +111,7 @@ exports.createBooking = asyncHandler(async (req, res, next) => {
     });
 
     await turf.bookSlot(sDate, sDay, s.startTime, s.endTime, booking._id);
+    await turf.save();
     created.push(booking);
   }
 
@@ -188,6 +201,7 @@ exports.cancelBooking = asyncHandler(async (req, res, next) => {
   if (turf) {
     const dayOfWeek = ['sunday','monday','tuesday','wednesday','thursday','friday','saturday'][booking.bookingDate.getDay()];
     await turf.cancelSlotBooking(booking.bookingDate, dayOfWeek, booking.startTime, booking.endTime);
+    await turf.save();
   }
 
   res.status(200).json({ success: true, message: 'Booking cancelled' });
