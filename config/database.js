@@ -5,7 +5,7 @@ const connectDB = async () => {
     const conn = await mongoose.connect(
       process.env.NODE_ENV === 'production' 
         ? process.env.MONGODB_URI_PROD 
-        : process.env.MONGODB_URI,
+        : process.env.MONGODB_URI, 
       {
         useNewUrlParser: true,
         useUnifiedTopology: true,
