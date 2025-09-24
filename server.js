@@ -22,8 +22,34 @@ const errorHandler = require('./middleware/errorHandler');
 const Booking = require('./models/Booking');
 const Match = require('./models/Match');
 
-const app = express();
+
 app.set("trust proxy", 1);
+const express = require('express');
+const cors = require('cors');
+
+const app = express();
+
+// Enable CORS for your Vercel frontend
+app.use(cors({
+  origin: 'https://newturffront.vercel.app',
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  credentials: true // if using cookies
+}));
+
+app.use(express.json());
+
+// Routes
+app.get('/api/matches', (req, res) => {
+  // your matches logic
+});
+
+app.get('/api/turfs', (req, res) => {
+  // your turfs logic
+});
+
+app.listen(process.env.PORT || 3000, () => console.log('Server running'));
+
+
 
 // Security middleware with Firebase-compatible settings
 app.use(helmet({
