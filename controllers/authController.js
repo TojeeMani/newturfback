@@ -3,7 +3,7 @@ const crypto = require('crypto');
 const admin = require('../config/firebase');
 const redisClient = require('../config/redis');
 const { validationResult } = require('express-validator');
-const { sendOTPEmail, sendResendOTPEmail, sendEmail } = require('../utils/emailService');
+const { sendOTPEmail, sendResendOTPEmail, sendEmail } = require('../utils/universalEmailService');
 
 // @desc    Register user (Step 1: Create user and send OTP)
 // @route   POST /api/auth/register

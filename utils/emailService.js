@@ -1,20 +1,28 @@
 const nodemailer = require('nodemailer');
 
-// Create transporter
+// Create transporter - works both locally and on Render
 const createTransporter = () => {
-  // Gmail convenience - check first since you have Gmail configured
+  // Gmail configuration (primary)
   const emailUser = process.env.EMAIL_USER;
   const emailPass = process.env.EMAIL_PASS || process.env.EMAIL_PASSWORD;
-  if (emailUser && emailPass && emailUser !== 'your-email@gmail.com' && emailPass !== 'your-app-password') {
+  
+  if (emailUser && emailPass && 
+      emailUser !== 'your-email@gmail.com' && 
+      emailPass !== 'your-app-password' &&
+      emailPass !== 'NOT SET') {
+    
     console.log('✅ Using Gmail configuration for:', emailUser);
     return nodemailer.createTransport({
       service: 'gmail',
-      auth: { user: emailUser, pass: emailPass },
+      auth: { 
+        user: emailUser, 
+        pass: emailPass 
+      },
       tls: { rejectUnauthorized: false }
     });
   }
 
-  // Prefer generic SMTP if provided
+  // Generic SMTP configuration (fallback)
   if (process.env.SMTP_HOST && process.env.SMTP_USER && (process.env.SMTP_PASS || process.env.SMTP_PASSWORD)) {
     try {
       const transporter = nodemailer.createTransport({
@@ -27,6 +35,7 @@ const createTransporter = () => {
         },
         tls: { rejectUnauthorized: false }
       });
+      console.log('✅ Using SMTP configuration');
       return transporter;
     } catch (e) {
       console.warn('⚠️  SMTP config present but failed to initialize:', e.message);
