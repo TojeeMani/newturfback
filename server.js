@@ -22,39 +22,13 @@ const errorHandler = require('./middleware/errorHandler');
 const Booking = require('./models/Booking');
 const Match = require('./models/Match');
 
-
-app.set("trust proxy", 1);
-const express = require('express');
-const cors = require('cors');
-
 const app = express();
+app.set("trust proxy", 1);
 
-// Enable CORS for your Vercel frontend
-app.use(cors({
-  origin: 'https://newturffront.vercel.app',
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  credentials: true // if using cookies
-}));
-
-app.use(express.json());
-
-// Routes
-app.get('/api/matches', (req, res) => {
-  // your matches logic
-});
-
-app.get('/api/turfs', (req, res) => {
-  // your turfs logic
-});
-
-app.listen(process.env.PORT || 3000, () => console.log('Server running'));
-
-
-
-// Security middleware with Firebase-compatible settings
+// Security middleware
 app.use(helmet({
-  crossOriginOpenerPolicy: false, // Disable COOP to allow Firebase popup auth
-  crossOriginEmbedderPolicy: false, // Disable COEP to allow Firebase popup auth
+  crossOriginOpenerPolicy: false,
+  crossOriginEmbedderPolicy: false,
   contentSecurityPolicy: {
     directives: {
       defaultSrc: ["'self'"],
@@ -68,44 +42,60 @@ app.use(helmet({
 }));
 app.use(compression());
 
-// Rate limiting - more lenient in development
+// Rate limiting
 const limiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: process.env.NODE_ENV === 'development' ? 1000 : 100, // Higher limit for development
+  windowMs: 15 * 60 * 1000,
+  max: process.env.NODE_ENV === 'development' ? 1000 : 100,
   message: 'Too many requests from this IP, please try again later.'
 });
 
-// Rate limiting for OTP requests (more restrictive)
 const otpLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: process.env.NODE_ENV === 'development' ? 50 : 5, // Higher limit for development
+  windowMs: 15 * 60 * 1000,
+  max: process.env.NODE_ENV === 'development' ? 50 : 5,
   message: 'Too many OTP requests from this IP, please try again later.',
   skipSuccessfulRequests: true
 });
 
-// Only apply rate limiting in production
 if (process.env.NODE_ENV === 'production') {
   app.use('/api/', limiter);
 }
 
-// Body parsing middleware
+// Body parsing
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
-// CORS configuration
+// ------------------- CORS CONFIGURATION -------------------
+const allowedOrigins = ['http://localhost:3000', 'https://newturffront.vercel.app'];
+
 app.use(cors({
-  origin: ['http://localhost:3000', 'https://newturffront.vercel.app/'],
+  origin: function(origin, callback) {
+    if (!origin) return callback(null, true); // allow non-browser requests
+    if (allowedOrigins.indexOf(origin) === -1) {
+      const msg = 'The CORS policy for this site does not allow access from the specified Origin.';
+      return callback(new Error(msg), false);
+    }
+    return callback(null, true);
+  },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'],
   allowedHeaders: ['Content-Type', 'Authorization']
 }));
 
-// Logging middleware
+// Preflight for all routes
+app.options('*', cors({
+  origin: allowedOrigins,
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+}));
+// -------------------------------------------------------------
+
+// Logging
 if (process.env.NODE_ENV === 'development') {
   app.use(morgan('dev'));
 }
 
-// Health check endpoint
+// Health check
 app.get('/health', (req, res) => {
   res.status(200).json({
     status: 'success',
@@ -132,13 +122,12 @@ app.use('*', (req, res) => {
   });
 });
 
-// Error handling middleware
+// Error handler
 app.use(errorHandler);
 
 // Database connection
 const connectDB = async () => {
   try {
-    // Use default MongoDB URI if environment variable is not set
     const mongoURI = process.env.NODE_ENV === 'production' 
       ? (process.env.MONGODB_URI_PROD || 'mongodb://localhost:27017/turfease')
       : (process.env.MONGODB_URI || 'mongodb://localhost:27017/turfease');
@@ -151,8 +140,6 @@ const connectDB = async () => {
     console.log(`MongoDB Connected: ${conn.connection.host}`);
   } catch (error) {
     console.error('Database connection error:', error.message);
-    console.log('Please make sure MongoDB is running or set up your environment variables.');
-    console.log('You can create a .env file in the backend directory with your configuration.');
     process.exit(1);
   }
 };
@@ -173,11 +160,10 @@ startServer();
 // Handle unhandled promise rejections
 process.on('unhandledRejection', (err, promise) => {
   console.log(`Error: ${err.message}`);
-  // Close server & exit process
   process.exit(1);
-}); 
+});
 
-// Auto-complete bookings: runs every 5 minutes
+// Auto-complete bookings: every 5 mins
 setInterval(async () => {
   try {
     const now = new Date();
@@ -198,7 +184,6 @@ setInterval(async () => {
         b.status = 'completed';
         await b.save();
         updated++;
-        // Send thank-you email with review link (best-effort)
         if (!b.reviewEmailSent) {
           try {
             const { sendEmail } = require('./utils/emailService');
@@ -221,9 +206,7 @@ setInterval(async () => {
             });
             b.reviewEmailSent = true;
             await b.save();
-          } catch (e) {
-            // Non-fatal
-          }
+          } catch (e) {}
         }
       }
     }
@@ -233,7 +216,7 @@ setInterval(async () => {
   }
 }, 5 * 60 * 1000);
 
-// Auto-transition matches: runs every 1 minute
+// Auto-transition matches: every 1 min
 setInterval(async () => {
   try {
     const now = new Date();
