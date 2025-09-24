@@ -1,5 +1,8 @@
 const Turf = require('../models/Turf');
 const Booking = require('../models/Booking');
+const Review = require('../models/Review');
+const mongoose = require('mongoose');
+const aiAnalyticsService = require('../services/aiAnalyticsService');
 const asyncHandler = require('../middleware/async');
 const ErrorResponse = require('../utils/errorResponse');
 const imageUploadService = require('../services/imageUploadService');
@@ -83,7 +86,16 @@ exports.getTurfs = asyncHandler(async (req, res, next) => {
   const allTurfs = await query;
 
   // Filter out turfs where owner population failed (owner not approved or inactive)
-  const turfs = allTurfs.filter(turf => turf.ownerId !== null);
+  const turfs = allTurfs.filter(turf => turf.ownerId !== null).map(turf => {
+    const turfData = turf.toObject();
+    delete turfData.ownerId; // Remove owner data for privacy
+    
+    // Ensure rating and totalReviews are included
+    turfData.rating = turfData.rating || 0;
+    turfData.totalReviews = turfData.totalReviews || 0;
+    
+    return turfData;
+  });
 
   // Pagination result
   const pagination = {};
@@ -128,9 +140,13 @@ exports.getTurf = asyncHandler(async (req, res, next) => {
     return next(new ErrorResponse(`Turf not available`, 404));
   }
 
-  // Remove owner data from response for privacy
+  // Remove owner data from response for privacy but keep rating data
   const turfData = turf.toObject();
   delete turfData.ownerId;
+
+  // Ensure rating and totalReviews are included in response
+  turfData.rating = turfData.rating || 0;
+  turfData.totalReviews = turfData.totalReviews || 0;
 
   res.status(200).json({
     success: true,
@@ -207,11 +223,11 @@ exports.createTurf = asyncHandler(async (req, res, next) => {
     return next(new ErrorResponse(`Sport type must be one of your registered sport types: ${sportsList}`, 400));
   }
 
-  // Create turf with image URLs (auto-approved)
+  // Create turf with image URLs (requires admin approval)
   const turfData = {
     ...req.body,
     images: imageUrls,
-    isApproved: true,
+    isApproved: false, // New turfs require admin approval
     // Set original registration data (cannot be changed later)
     originalRegistrationData: {
       name: req.body.name,
@@ -225,7 +241,8 @@ exports.createTurf = asyncHandler(async (req, res, next) => {
   res.status(201).json({
     success: true,
     data: turf,
-    message: `Turf created successfully with ${imageUrls.length} Cloudinary images and is now live!`
+    message: `Turf submitted successfully! It will be reviewed by admin and will be live once approved.`,
+    approvalStatus: 'pending'
   });
 });
 
@@ -382,6 +399,61 @@ exports.getMyTurfs = asyncHandler(async (req, res, next) => {
     success: true,
     count: turfs.length,
     data: turfs
+  });
+});
+
+// @desc    Add new sport to existing turf
+// @route   POST /api/turfs/:id/sports
+// @access  Private/Owner
+exports.addSportToTurf = asyncHandler(async (req, res, next) => {
+  const turf = await Turf.findById(req.params.id);
+
+  if (!turf) {
+    return next(new ErrorResponse(`Turf not found with id of ${req.params.id}`, 404));
+  }
+
+  // Make sure user is turf owner
+  if (turf.ownerId.toString() !== req.user.id && req.user.role !== 'admin') {
+    return next(new ErrorResponse(`User ${req.user.id} is not authorized to update this turf`, 401));
+  }
+
+  // Validate the new sport data
+  const { sport, pricePerHour, availableSlots } = req.body;
+
+  if (!sport || !['Football', 'Cricket', 'Basketball', 'Tennis', 'Badminton', 'Volleyball'].includes(sport)) {
+    return next(new ErrorResponse('Valid sport type is required', 400));
+  }
+
+  if (!pricePerHour || pricePerHour < 0) {
+    return next(new ErrorResponse('Valid price per hour is required', 400));
+  }
+
+  // Check if sport already exists for this turf
+  if (turf.sport === sport) {
+    return next(new ErrorResponse(`Sport ${sport} already exists for this turf`, 400));
+  }
+
+  // Create a new turf entry for the additional sport
+  const newSportTurf = await Turf.create({
+    ownerId: req.user.id,
+    name: turf.name,
+    location: turf.location,
+    pricePerHour: pricePerHour,
+    images: turf.images, // Use existing images
+    sport: sport,
+    description: turf.description,
+    amenities: turf.amenities,
+    isApproved: true, // Additional sports are auto-approved since owner is verified
+    originalRegistrationData: turf.originalRegistrationData,
+    availableSlots: availableSlots || turf.availableSlots,
+    slotDuration: turf.slotDuration,
+    advanceBookingDays: turf.advanceBookingDays
+  });
+
+  res.status(201).json({
+    success: true,
+    data: newSportTurf,
+    message: `New sport ${sport} added to your turf successfully!`
   });
 });
 
@@ -776,16 +848,220 @@ exports.getOwnerAnalytics = asyncHandler(async (req, res, next) => {
       },
       { $sort: { '_id': 1 } }
     ]);
-    
-    res.status(200).json({
-      success: true,
-      data: {
-        totalTurfs,
-        totalBookings,
-        totalRevenue,
-        monthlyBookings
+
+    // Get rating analytics for owner's turfs
+    const ratingAnalytics = await Review.aggregate([
+      {
+        $lookup: {
+          from: 'turfs',
+          localField: 'turfId',
+          foreignField: '_id',
+          as: 'turf'
+        }
+      },
+      {
+        $match: {
+          'turf.ownerId': new mongoose.Types.ObjectId(ownerId)
+        }
+      },
+      {
+        $group: {
+          _id: null,
+          totalReviews: { $sum: 1 },
+          averageRating: { $avg: '$rating' },
+          ratingDistribution: {
+            $push: '$rating'
+          }
+        }
+      },
+      {
+        $project: {
+          totalReviews: 1,
+          averageRating: { $round: ['$averageRating', 1] },
+          ratingDistribution: {
+            5: { $size: { $filter: { input: '$ratingDistribution', cond: { $eq: ['$$this', 5] } } } },
+            4: { $size: { $filter: { input: '$ratingDistribution', cond: { $eq: ['$$this', 4] } } } },
+            3: { $size: { $filter: { input: '$ratingDistribution', cond: { $eq: ['$$this', 3] } } } },
+            2: { $size: { $filter: { input: '$ratingDistribution', cond: { $eq: ['$$this', 2] } } } },
+            1: { $size: { $filter: { input: '$ratingDistribution', cond: { $eq: ['$$this', 1] } } } }
+          }
+        }
       }
+    ]);
+
+    // Get recent reviews with customer info
+    const recentReviews = await Review.find({
+      turfId: { $in: await Turf.find({ ownerId }).distinct('_id') }
+    })
+    .populate('userId', 'name email')
+    .populate('turfId', 'name')
+    .sort({ createdAt: -1 })
+    .limit(10)
+    .select('rating comment createdAt turfId userId');
+
+    // Get turf-specific rating summary
+    const turfRatings = await Turf.aggregate([
+      { $match: { ownerId: new mongoose.Types.ObjectId(ownerId) } },
+      {
+        $lookup: {
+          from: 'reviews',
+          localField: '_id',
+          foreignField: 'turfId',
+          as: 'reviews'
+        }
+      },
+      {
+        $project: {
+          name: 1,
+          totalReviews: { $size: '$reviews' },
+          averageRating: {
+            $cond: [
+              { $gt: [{ $size: '$reviews' }, 0] },
+              { $round: [{ $avg: '$reviews.rating' }, 1] },
+              0
+            ]
+          }
+        }
+      },
+      { $sort: { averageRating: -1, totalReviews: -1 } }
+    ]);
+    
+    // Get popular time slots
+    const popularSlots = await Booking.aggregate([
+      { $match: { ownerId: req.user.id, status: 'completed' } },
+      {
+        $group: {
+          _id: '$startTime',
+          count: { $sum: 1 },
+          revenue: { $sum: '$totalAmount' }
+        }
+      },
+      { $sort: { count: -1 } },
+      { $limit: 10 }
+    ]);
+
+    // Get turf performance
+    const turfPerformance = await Turf.aggregate([
+      { $match: { ownerId: new mongoose.Types.ObjectId(ownerId) } },
+      {
+        $lookup: {
+          from: 'bookings',
+          localField: '_id',
+          foreignField: 'turfId',
+          as: 'bookings'
+        }
+      },
+      {
+        $project: {
+          turfName: '$name',
+          bookings: { $size: '$bookings' },
+          revenue: {
+            $reduce: {
+              input: '$bookings',
+              initialValue: 0,
+              in: { $add: ['$$value', '$$this.totalAmount'] }
+            }
+          }
+        }
+      },
+      { $sort: { bookings: -1 } },
+      { $limit: 10 }
+    ]);
+
+    // Get recent trends (last 30 days)
+    const thirtyDaysAgo = new Date();
+    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+    
+    const trends = await Booking.aggregate([
+      {
+        $match: {
+          ownerId: req.user.id,
+          createdAt: { $gte: thirtyDaysAgo }
+        }
+      },
+      {
+        $group: {
+          _id: {
+            year: { $year: '$createdAt' },
+            month: { $month: '$createdAt' },
+            day: { $dayOfMonth: '$createdAt' }
+          },
+          bookings: { $sum: 1 },
+          revenue: { $sum: '$totalAmount' }
+        }
+      },
+      { $sort: { '_id.year': 1, '_id.month': 1, '_id.day': 1 } }
+    ]);
+
+    // Get confirmed and cancelled bookings for summary
+    const confirmedBookings = await Booking.countDocuments({ 
+      ownerId: req.user.id, 
+      status: 'confirmed' 
     });
+    
+    const cancelledBookings = await Booking.countDocuments({ 
+      ownerId: req.user.id, 
+      status: 'cancelled' 
+    });
+
+    // Get historical data for AI/ML analysis
+    const historicalBookings = await Booking.find({ 
+      ownerId: req.user.id,
+      status: 'completed'
+    }).sort({ createdAt: -1 }).limit(365); // Last year of data
+
+    // AI/ML Enhanced Analytics
+    let aiInsights = {};
+    try {
+      // Predict popular time slots
+      aiInsights.popularTimeSlots = await aiAnalyticsService.predictPopularTimeSlots(historicalBookings);
+      
+      // Enhanced rating analysis
+      aiInsights.ratingAnalysis = await aiAnalyticsService.analyzeRatingDistribution(recentReviews);
+      
+      // Predictive booking trends
+      aiInsights.bookingTrends = await aiAnalyticsService.predictBookingTrends(historicalBookings);
+      
+      // Revenue optimization
+      aiInsights.revenueOptimization = await aiAnalyticsService.optimizeRevenue(historicalBookings, []);
+      
+    } catch (aiError) {
+      console.error('AI Analytics Error:', aiError);
+      aiInsights = {
+        error: 'AI analytics temporarily unavailable',
+        popularTimeSlots: {},
+        ratingAnalysis: {},
+        bookingTrends: {},
+        revenueOptimization: {}
+      };
+    }
+
+    res.status(200).json({
+        success: true,
+        data: {
+          summary: {
+            totalTurfs,
+            totalBookings,
+            totalRevenue,
+            confirmedBookings,
+            cancelledBookings,
+            activeTurfs: totalTurfs, // Assuming all turfs are active
+            averageBookingValue: totalBookings > 0 ? Math.round(totalRevenue / totalBookings) : 0
+          },
+          monthlyBookings,
+          ratingAnalytics: ratingAnalytics[0] || {
+            totalReviews: 0,
+            averageRating: 0,
+            ratingDistribution: { 5: 0, 4: 0, 3: 0, 2: 0, 1: 0 }
+          },
+          recentReviews,
+          turfRatings,
+          popularSlots,
+          turfPerformance,
+          trends,
+          aiInsights // Add AI/ML enhanced insights
+        }
+      });
   } catch (error) {
     return next(new ErrorResponse(error.message, 500));
   }

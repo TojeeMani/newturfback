@@ -18,7 +18,8 @@ const {
   getOwnerBookings,
   allocateSlotsForDay,
   getOwnerAnalytics,
-  getOwnerCustomers
+  getOwnerCustomers,
+  addSportToTurf
 } = require('../controllers/turfController');
 
 const router = express.Router();
@@ -41,6 +42,7 @@ router.get('/owner/bookings', authorize('owner'), getOwnerBookings);
 router.get('/owner/analytics', authorize('owner'), getOwnerAnalytics);
 router.get('/owner/customers', authorize('owner'), getOwnerCustomers);
 router.post('/', authorize('owner'), createTurf);
+router.post('/:id/sports', authorize('owner'), addSportToTurf);
 router.put('/:id', authorize('owner'), updateTurf);
 router.delete('/:id', authorize('owner'), deleteTurf);
 router.get('/:id/bookings', authorize('owner'), getTurfBookings);

@@ -159,6 +159,14 @@ const BookingSchema = new mongoose.Schema({
   toObject: { virtuals: true }
 });
 
+// Virtual populate for reviews
+BookingSchema.virtual('reviews', {
+  ref: 'Review',
+  localField: '_id',
+  foreignField: 'bookingId',
+  justOne: false
+});
+
 // Indexes for better query performance
 BookingSchema.index({ turfId: 1, bookingDate: 1 });
 BookingSchema.index({ ownerId: 1, bookingDate: 1 });
@@ -193,6 +201,11 @@ BookingSchema.virtual('qrPayload').get(function() {
     startTime: this.startTime,
     endTime: this.endTime
   });
+});
+
+// Virtual to check if booking has a review
+BookingSchema.virtual('hasReview').get(function() {
+  return this.reviews && this.reviews.length > 0;
 });
 
 // Ensure duration and totalAmount are set before validation
@@ -297,6 +310,11 @@ BookingSchema.statics.findByCustomer = function(customerId, options = {}) {
   return this.find(query)
     .populate('turfId', 'name location sport images')
     .populate('ownerId', 'name businessName')
+    .populate({
+      path: 'reviews',
+      match: { userId: customerId },
+      select: 'rating comment'
+    })
     .sort({ bookingDate: -1 });
 };
 

@@ -11,6 +11,11 @@ const ReviewSchema = new mongoose.Schema({
     ref: 'User',
     required: true
   },
+  bookingId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'Booking',
+    required: true
+  },
   rating: {
     type: Number,
     min: 1,
@@ -21,10 +26,14 @@ const ReviewSchema = new mongoose.Schema({
     type: String,
     trim: true,
     default: ''
+  },
+  isVerified: {
+    type: Boolean,
+    default: true // Set to true since we validate booking completion
   }
 }, { timestamps: true });
 
-ReviewSchema.index({ turfId: 1, userId: 1 }, { unique: true });
+ReviewSchema.index({ bookingId: 1 }, { unique: true }); // One review per booking
 
 module.exports = mongoose.model('Review', ReviewSchema);
 
