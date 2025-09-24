@@ -2,6 +2,18 @@ const nodemailer = require('nodemailer');
 
 // Create transporter
 const createTransporter = () => {
+  // Gmail convenience - check first since you have Gmail configured
+  const emailUser = process.env.EMAIL_USER;
+  const emailPass = process.env.EMAIL_PASS || process.env.EMAIL_PASSWORD;
+  if (emailUser && emailPass && emailUser !== 'your-email@gmail.com' && emailPass !== 'your-app-password') {
+    console.log('✅ Using Gmail configuration for:', emailUser);
+    return nodemailer.createTransport({
+      service: 'gmail',
+      auth: { user: emailUser, pass: emailPass },
+      tls: { rejectUnauthorized: false }
+    });
+  }
+
   // Prefer generic SMTP if provided
   if (process.env.SMTP_HOST && process.env.SMTP_USER && (process.env.SMTP_PASS || process.env.SMTP_PASSWORD)) {
     try {
@@ -19,17 +31,6 @@ const createTransporter = () => {
     } catch (e) {
       console.warn('⚠️  SMTP config present but failed to initialize:', e.message);
     }
-  }
-
-  // Gmail convenience
-  const emailUser = process.env.EMAIL_USER;
-  const emailPass = process.env.EMAIL_PASS || process.env.EMAIL_PASSWORD;
-  if (emailUser && emailPass && emailUser !== 'your-email@gmail.com' && emailPass !== 'your-app-password') {
-    return nodemailer.createTransport({
-      service: 'gmail',
-      auth: { user: emailUser, pass: emailPass },
-      tls: { rejectUnauthorized: false }
-    });
   }
 
   console.warn('⚠️  Email credentials not configured. Using development mode.');
