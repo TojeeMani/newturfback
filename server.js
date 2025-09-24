@@ -23,6 +23,7 @@ const Booking = require('./models/Booking');
 const Match = require('./models/Match');
 
 const app = express();
+app.set("trust proxy", 1);
 
 // Security middleware with Firebase-compatible settings
 app.use(helmet({
