@@ -25,10 +25,11 @@ const Match = require('./models/Match');
 const app = express();
 app.set("trust proxy", 1);
 
-// Security middleware
+
+// Security middleware with Firebase-compatible settings
 app.use(helmet({
-  crossOriginOpenerPolicy: false,
-  crossOriginEmbedderPolicy: false,
+  crossOriginOpenerPolicy: false, // Disable COOP to allow Firebase popup auth
+  crossOriginEmbedderPolicy: false, // Disable COEP to allow Firebase popup auth
   contentSecurityPolicy: {
     directives: {
       defaultSrc: ["'self'"],
@@ -42,60 +43,46 @@ app.use(helmet({
 }));
 app.use(compression());
 
-// Rate limiting
+// Rate limiting - more lenient in development
 const limiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: process.env.NODE_ENV === 'development' ? 1000 : 100,
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: process.env.NODE_ENV === 'development' ? 1000 : 100, // Higher limit for development
   message: 'Too many requests from this IP, please try again later.'
 });
 
+// Rate limiting for OTP requests (more restrictive)
 const otpLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000,
-  max: process.env.NODE_ENV === 'development' ? 50 : 5,
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: process.env.NODE_ENV === 'development' ? 50 : 5, // Higher limit for development
   message: 'Too many OTP requests from this IP, please try again later.',
   skipSuccessfulRequests: true
 });
 
+// Only apply rate limiting in production
 if (process.env.NODE_ENV === 'production') {
   app.use('/api/', limiter);
 }
 
-// Body parsing
+// Body parsing middleware
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
-// ------------------- CORS CONFIGURATION -------------------
-const allowedOrigins = ['http://localhost:3000', 'https://newturffront.vercel.app'];
-
+// CORS configuration
 app.use(cors({
-  origin: function(origin, callback) {
-    if (!origin) return callback(null, true); // allow non-browser requests
-    if (allowedOrigins.indexOf(origin) === -1) {
-      const msg = 'The CORS policy for this site does not allow access from the specified Origin.';
-      return callback(new Error(msg), false);
-    }
-    return callback(null, true);
-  },
+  
+  origin: ['http://localhost:3000', 'https://newturffront.vercel.app'],
+
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'],
   allowedHeaders: ['Content-Type', 'Authorization']
 }));
 
-// Preflight for all routes
-app.options('*', cors({
-  origin: allowedOrigins,
-  credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'],
-  allowedHeaders: ['Content-Type', 'Authorization']
-}));
-// -------------------------------------------------------------
-
-// Logging
+// Logging middleware
 if (process.env.NODE_ENV === 'development') {
   app.use(morgan('dev'));
 }
 
-// Health check
+// Health check endpoint
 app.get('/health', (req, res) => {
   res.status(200).json({
     status: 'success',
@@ -122,12 +109,13 @@ app.use('*', (req, res) => {
   });
 });
 
-// Error handler
+// Error handling middleware
 app.use(errorHandler);
 
 // Database connection
 const connectDB = async () => {
   try {
+    // Use default MongoDB URI if environment variable is not set
     const mongoURI = process.env.NODE_ENV === 'production' 
       ? (process.env.MONGODB_URI_PROD || 'mongodb://localhost:27017/turfease')
       : (process.env.MONGODB_URI || 'mongodb://localhost:27017/turfease');
@@ -140,6 +128,8 @@ const connectDB = async () => {
     console.log(`MongoDB Connected: ${conn.connection.host}`);
   } catch (error) {
     console.error('Database connection error:', error.message);
+    console.log('Please make sure MongoDB is running or set up your environment variables.');
+    console.log('You can create a .env file in the backend directory with your configuration.');
     process.exit(1);
   }
 };
@@ -160,10 +150,11 @@ startServer();
 // Handle unhandled promise rejections
 process.on('unhandledRejection', (err, promise) => {
   console.log(`Error: ${err.message}`);
+  // Close server & exit process
   process.exit(1);
-});
+}); 
 
-// Auto-complete bookings: every 5 mins
+// Auto-complete bookings: runs every 5 minutes
 setInterval(async () => {
   try {
     const now = new Date();
@@ -184,6 +175,7 @@ setInterval(async () => {
         b.status = 'completed';
         await b.save();
         updated++;
+        // Send thank-you email with review link (best-effort)
         if (!b.reviewEmailSent) {
           try {
             const { sendEmail } = require('./utils/emailService');
@@ -206,7 +198,9 @@ setInterval(async () => {
             });
             b.reviewEmailSent = true;
             await b.save();
-          } catch (e) {}
+          } catch (e) {
+            // Non-fatal
+          }
         }
       }
     }
@@ -216,7 +210,7 @@ setInterval(async () => {
   }
 }, 5 * 60 * 1000);
 
-// Auto-transition matches: every 1 min
+// Auto-transition matches: runs every 1 minute
 setInterval(async () => {
   try {
     const now = new Date();
