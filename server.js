@@ -67,22 +67,12 @@ app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 // CORS configuration
-// Use environment variables:
-const allowedOrigins = [
-  process.env.FRONTEND_URL, // e.g. http://localhost:3000
-  process.env.FRONTEND_URL_PROD, // e.g. https://newturffront-kc7o8aotu-tojee-manis-projects.vercel.app
-];
-
-// Filter out any undefined
-const origins = allowedOrigins.filter(Boolean);
-
 app.use(cors({
-  origin: origins,
+  origin: ['http://localhost:3000', 'https://newturffront.vercel.app/'],
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH'],
   allowedHeaders: ['Content-Type', 'Authorization']
 }));
-
 
 // Logging middleware
 if (process.env.NODE_ENV === 'development') {
