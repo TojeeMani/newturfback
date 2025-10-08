@@ -57,6 +57,11 @@ const BookingSchema = new mongoose.Schema({
   },
   
   // Pricing information
+  courtType: {
+    type: String,
+    enum: ['full', 'half'],
+    default: 'full'
+  },
   pricePerHour: {
     type: Number,
     required: [true, 'Price per hour is required'],
@@ -215,7 +220,8 @@ BookingSchema.pre('validate', function(next) {
     const end = new Date(`2000-01-01 ${this.endTime}`);
     const minutes = (end - start) / (1000 * 60);
     this.duration = minutes;
-    this.totalAmount = (minutes / 60) * this.pricePerHour;
+    const courtFactor = this.courtType === 'half' ? 0.5 : 1;
+    this.totalAmount = ((minutes / 60) * this.pricePerHour) * courtFactor;
   }
   next();
 });

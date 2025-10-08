@@ -69,7 +69,7 @@ class UniversalEmailService {
   }
 
   // Send basic email
-  async sendEmail(to, subject, html, text = null) {
+  async sendEmail(to, subject, html, text = null, attachments = null) {
     if (!this.transporter) {
       console.log('🔧 Development mode - Email would be sent to:', to);
       console.log('📋 Subject:', subject);
@@ -88,7 +88,8 @@ class UniversalEmailService {
         to,
         subject,
         html,
-        text: text || html.replace(/<[^>]*>/g, '') // Strip HTML tags for text version
+        text: text || html.replace(/<[^>]*>/g, ''), // Strip HTML tags for text version
+        attachments: Array.isArray(attachments) ? attachments : undefined
       };
 
       const result = await this.transporter.sendMail(mailOptions);
@@ -163,7 +164,7 @@ module.exports = {
   emailService,
   
   // Convenience functions for backward compatibility
-  sendEmail: (to, subject, html, text) => emailService.sendEmail(to, subject, html, text),
+  sendEmail: (to, subject, html, text, attachments) => emailService.sendEmail(to, subject, html, text, attachments),
   sendOTPEmail: (email, otp, firstName) => emailService.sendOTPEmail(email, otp, firstName),
   sendBookingConfirmation: (email, bookingDetails) => emailService.sendBookingConfirmation(email, bookingDetails),
   testConnection: () => emailService.testConnection()

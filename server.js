@@ -16,6 +16,7 @@ const matchRoutes = require('./routes/matches');
 const adminRoutes = require('./routes/admin');
 const uploadRoutes = require('./routes/upload');
 const chatRoutes = require('./routes/chat');
+const paymentRoutes = require('./routes/payment');
 
 // Import middleware
 const errorHandler = require('./middleware/errorHandler');
@@ -100,6 +101,7 @@ app.use('/api/matches', matchRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/upload', uploadRoutes);
 app.use('/api/chat', chatRoutes);
+app.use('/api/payment', paymentRoutes);
 
 // 404 handler
 app.use('*', (req, res) => {

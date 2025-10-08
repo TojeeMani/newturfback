@@ -40,7 +40,7 @@ exports.getBooking = asyncHandler(async (req, res, next) => {
 // @route   POST /api/bookings
 // @access  Private
 exports.createBooking = asyncHandler(async (req, res, next) => {
-  const { turfId, date, startTime, endTime, paymentMethod, slots, teams } = req.body;
+  const { turfId, date, startTime, endTime, paymentMethod, slots, teams, courtType } = req.body;
 
   const isBulk = Array.isArray(slots) && slots.length > 0;
 
@@ -56,7 +56,7 @@ exports.createBooking = asyncHandler(async (req, res, next) => {
     return next(new ErrorResponse('Turf not found', 404));
   }
 
-  const toProcess = isBulk ? slots : [{ date, startTime, endTime, paymentMethod }];
+  const toProcess = isBulk ? slots : [{ date, startTime, endTime, paymentMethod, courtType }];
   const created = [];
 
   for (const s of toProcess) {
@@ -92,6 +92,9 @@ exports.createBooking = asyncHandler(async (req, res, next) => {
       ? (s.paymentMethod || paymentMethod || 'online')
       : 'online';
 
+    // Court type handling (defaults to 'full')
+    const ct = ((s.courtType || courtType || 'full').toLowerCase() === 'half') ? 'half' : 'full';
+
     const booking = await Booking.create({
       turfId: turf._id,
       ownerId: turf.ownerId,
@@ -105,6 +108,7 @@ exports.createBooking = asyncHandler(async (req, res, next) => {
       startTime: s.startTime,
       endTime: s.endTime,
       pricePerHour,
+      courtType: ct,
       status: 'confirmed',
       paymentStatus: method === 'online' ? 'pending' : 'pending',
       paymentMethod: method,
@@ -155,63 +159,7 @@ exports.createBooking = asyncHandler(async (req, res, next) => {
     created.push(booking);
   }
 
-  // Send confirmation email (best-effort) with booking code and QR
-  try {
-    const { sendEmail } = require('../utils/emailService');
-    if (req.user?.email) {
-      const list = (created || []).length ? created : [created];
-      const rows = list.map(b => {
-        const code = b.bookingCode || (b._id?.toString() || '').slice(-8).toUpperCase();
-        const qrData = JSON.stringify({ bookingId: b._id?.toString(), bookingCode: code });
-        const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=140x140&data=${encodeURIComponent(qrData)}`;
-        return `
-          <tr>
-            <td style="padding:8px;border:1px solid #e5e7eb;">${new Date(b.bookingDate).toDateString()}</td>
-            <td style="padding:8px;border:1px solid #e5e7eb;">${b.startTime} - ${b.endTime}</td>
-            <td style="padding:8px;border:1px solid #e5e7eb;"><code>${code}</code></td>
-            <td style="padding:8px;border:1px solid #e5e7eb;"><img src="${qrUrl}" alt="QR" /></td>
-          </tr>`;
-      }).join('');
-
-      const html = `
-        <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Oxygen,Ubuntu,Cantarell,'Helvetica Neue',Arial,sans-serif;max-width:680px;margin:0 auto;background:#f3f4f6;padding:24px;">
-          <div style="background:#ffffff;border-radius:16px;overflow:hidden;box-shadow:0 10px 25px rgba(0,0,0,0.08);">
-            <div style="background:linear-gradient(135deg,#10b981,#059669);padding:24px;color:#fff;text-align:center;">
-              <div style="font-size:20px;font-weight:700;letter-spacing:.3px;">TurfEase</div>
-              <div style="font-size:14px;opacity:.9;margin-top:4px;">Booking Confirmation</div>
-            </div>
-            <div style="padding:24px;">
-              <p style="margin:0 0 8px 0;color:#111827;font-weight:600;">Hi ${req.user.firstName || 'Player'},</p>
-              <p style="margin:0 0 16px 0;color:#4b5563;">Your booking at <strong>${turf.name}</strong> is confirmed. Please bring the QR or booking code for check‑in.</p>
-              <table role="presentation" style="width:100%;border-collapse:separate;border-spacing:0;overflow:hidden;border-radius:12px;border:1px solid #e5e7eb;">
-                <thead>
-                  <tr style="background:#f9fafb;">
-                    <th style="text-align:left;padding:10px 12px;color:#374151;font-size:12px;text-transform:uppercase;letter-spacing:.5px;">Date</th>
-                    <th style="text-align:left;padding:10px 12px;color:#374151;font-size:12px;text-transform:uppercase;letter-spacing:.5px;">Time</th>
-                    <th style="text-align:left;padding:10px 12px;color:#374151;font-size:12px;text-transform:uppercase;letter-spacing:.5px;">Code</th>
-                    <th style="text-align:left;padding:10px 12px;color:#374151;font-size:12px;text-transform:uppercase;letter-spacing:.5px;">QR</th>
-                  </tr>
-                </thead>
-                <tbody>${rows}</tbody>
-              </table>
-              <div style="margin-top:16px;padding:12px 14px;background:#f9fafb;border:1px solid #e5e7eb;border-radius:10px;color:#374151;font-size:13px;">Payment Method: <strong>${(paymentMethod || 'online').toUpperCase()}</strong></div>
-              <div style="text-align:center;margin-top:20px;">
-                <a href="${process.env.FRONTEND_URL || 'http://localhost:3000'}/bookings/my" style="display:inline-block;background:#10b981;color:#ffffff;text-decoration:none;padding:10px 18px;border-radius:10px;font-weight:600;font-size:14px;">View My Bookings</a>
-              </div>
-            </div>
-            <div style="padding:14px;text-align:center;background:#f9fafb;color:#6b7280;font-size:12px;">© ${new Date().getFullYear()} TurfEase. All rights reserved.</div>
-          </div>
-        </div>`;
-      await sendEmail({
-        email: req.user.email,
-        subject: 'Your TurfEase booking is confirmed',
-        html,
-        text: 'Your booking is confirmed.'
-      });
-    }
-  } catch (e) {
-    console.log('Email send skipped/failure:', e.message);
-  }
+  // Email confirmation deferred: will be sent after successful payment.
 
   res.status(201).json({
     success: true,
